@@ -31,11 +31,14 @@ fakePage player activateFailures activations = do
     _ -> pure (0, "{\"ok\":true}", "")
 
 -- | Two polls per round and no settling delay, so a failing warm-up ends quickly.
-warm :: Backend -> IO (Either Text ())
-warm backend = withSystemTempDirectory "run" $ \dir ->
+warmWith :: Int -> Backend -> IO (Either Text ())
+warmWith retries backend = withSystemTempDirectory "run" $ \dir ->
   withLogger dir $ \logger -> do
     b4 <- newB4 backend (Just (Pid 7)) logger Exploration
-    warmUp 2 0 b4
+    warmUp retries 2 0 b4
+
+warm :: Backend -> IO (Either Text ())
+warm = warmWith 2
 
 spec :: Spec
 spec = do
@@ -54,6 +57,11 @@ spec = do
       r <- warm =<< fakePage True 1 activations
       r `shouldBe` Right ()
       readIORef activations `shouldReturn` 2
+    it "keeps retrying the activation while another window holds the foreground, up to its retries" $ do
+      activations <- newIORef 0
+      r <- warmWith 6 =<< fakePage True 5 activations
+      r `shouldBe` Right ()
+      readIORef activations `shouldReturn` 6
     it "reports the environment as not ready when the page never exposes its player" $ do
       activations <- newIORef 0
       r <- warm =<< fakePage False 0 activations

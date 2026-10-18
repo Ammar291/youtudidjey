@@ -69,7 +69,7 @@ withChrome b4 stage = bracket open close
       let b = withPid pid b4
           session = ChromeSession pid profile throwaway
       void (waitFor 40 (paneHasYouTube b))
-      warmUp 30 3000000 b >>= \case
+      warmUp 6 30 5000000 b >>= \case
         Left why -> close session >> throwIO (EnvironmentNotReady why)
         Right () -> threadDelay 2000000 -- let the single-page app settle before the first song
       pure session
@@ -82,10 +82,11 @@ withChrome b4 stage = bracket open close
       v -> Left (B4Unexpected 0 ("open returned no pid: " <> T.pack (show v)))
 
 -- | Brings Chrome to the front and waits (up to @tries@ half-second polls) for the paused player.
--- A background window exposes no page tree, so a failed activation is retried after @settleUs@; a
--- missing player gets a reload (F5) and @settleUs@ to load. At most two retries.
-warmUp :: Int -> Int -> B4 -> IO (Either Text ())
-warmUp tries settleUs b = attempt (2 :: Int)
+-- A background window exposes no page tree, so a failed activation is retried after @settleUs@
+-- (Windows refuses to switch the foreground while someone is using another window); a missing
+-- player gets a reload (F5) and @settleUs@ to load. At most @retries@ retries.
+warmUp :: Int -> Int -> Int -> B4 -> IO (Either Text ())
+warmUp retries0 tries settleUs b = attempt retries0
   where
     attempt retries = do
       activated <- isRight <$> withInput b (\tok -> runInput b ODriver tok Activate)
