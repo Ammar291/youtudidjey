@@ -59,7 +59,9 @@ Measured against a live YouTube watch page with Chrome launched with `--force-re
 | Results carry identity + duration | video links: identifier `video-title`, name `"… 4 minutes, 9 seconds"`; Mixes have no identifier |
 | Result → playing | link `press` → watch page ≈ 3.3 s; pre-roll ad pod (5 s + 30 s) before the song |
 | LLM CLI | `claude -p --model sonnet --tools "" --output-format json` ≈ 6.7 s for a trivial prompt; `--json-schema` available |
-| **`hover` makes the slider fresh** | playing from 2:13: no hover → `2:16` twice 3 s apart (stale); hover → `2:23`, `2:26` (correct); paused + 1.5 s → `2:27` |
+| **`hover` makes the slider fresh** | playing from 2:13: no hover → `2:16` twice 3 s apart (stale); hover → `2:23`, `2:26` (correct). Correction (Task 7): "fresh after pause" was confounded by the hovering pointer — without hover the slider stays stale after a pause and even keeps the finished ad's `0:02 of 0:15` |
+| **Fresh-session playback refusal** | in a session whose first page was the home page, videos reached by in-page navigation show "Unable to play media" → "Video unavailable" (radio skips every ~3 s); a full watch-page load plays, and afterwards in-page navigation plays too. F5 recovers sometimes |
+| Mix results | the first `video-title` link can be in a Mix shelf; real videos end with a duration phrase; clicks open `&list=RD…&start_radio=1` |
 | Play/pause label varies | `Pause (k)` / `Play (k)` *or* `Pause keyboard shortcut k` / `Play keyboard shortcut k` |
 | Time display duplicate | a button under the player is titled `"2 Minutes 13 Seconds of 4 Minutes 8 Seconds"` (may differ by 1 s from slider) |
 | Unicode in tree | captions contain `♪`; Python must run with `-X utf8` |
@@ -116,7 +118,9 @@ So the pause deadline is computed, not polled:
   via `hover` over the player + slider read, which also absorbs any mid-roll ad or buffering stall.
 - Duration sources disagree (same video: result label 4:09, player time display 4:08, slider 4:07);
   use the player's values, never the result label, for the deadline.
-- After pausing (controls visible, value fresh) read the position → recorded pause margin.
+- Pause margin (observer, read-only — it never hovers): remaining = observed start + duration − pause
+  time, with the duration reported by the stage (its fresh hover reading). Slider durations under 60 s
+  are treated as ad residue and ignored.
 
 ## Architecture
 
@@ -162,9 +166,12 @@ error, …), `llm.jsonl` (exploration: prompt, response, duration), `snapshots/`
 
 ### Browser session
 
-`yuotudidjey` opens the browser with `blindly4 open --url https://www.youtube.com/ --chrome-profile
-.chrome-profile/<stage>-<stamp>` (fresh profile per stage run) and closes it with
-`blindly4 key --key alt+f4 --pid <pid>`. Every browser interaction is a blindly4 command.
+`yuotudidjey` opens the browser with `blindly4 open --url <warm-up watch page> --chrome-profile
+.chrome-profile/<stage>-<stamp>` (fresh profile per stage run), pauses the song-independent warm-up
+video ("Me at the zoo", 19 s) so the session's player is initialised by a full page load, and closes the
+window by pressing Chrome's caption **Close** button (Alt+F4 as fallback — a focused bubble can swallow
+it). Every browser interaction is a blindly4 command; the warm-up happens before the first song is
+assigned and is outside every latency window.
 
 ## Exploration stage
 

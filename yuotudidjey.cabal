@@ -36,6 +36,7 @@ library
         Yuo.Guard
         Yuo.Log
         Yuo.Match
+        Yuo.Observer
         Yuo.Songs
         Yuo.Time
         Yuo.Tree
@@ -60,6 +61,7 @@ test-suite spec
         GuardSpec
         LogSpec
         MatchSpec
+        ObserverSpec
         SongsSpec
         TimeSpec
         TreeSpec

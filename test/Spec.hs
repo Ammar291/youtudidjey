@@ -4,6 +4,7 @@ import qualified BlindlySpec
 import qualified GuardSpec
 import qualified LogSpec
 import qualified MatchSpec
+import qualified ObserverSpec
 import qualified SongsSpec
 import Test.Hspec
 import qualified TimeSpec
@@ -18,3 +19,4 @@ main = hspec $ do
   describe "Yuo.Log" LogSpec.spec
   describe "Yuo.Blindly" BlindlySpec.spec
   describe "Yuo.Tree" TreeSpec.spec
+  describe "Yuo.Observer" ObserverSpec.spec
