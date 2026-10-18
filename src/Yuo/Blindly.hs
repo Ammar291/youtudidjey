@@ -8,6 +8,7 @@ module Yuo.Blindly
   , argv
   , Backend (..)
   , processBackend
+  , processBackendWith
   , B4 (..)
   , newB4
   , withPid
@@ -33,7 +34,7 @@ import qualified Data.Text.Encoding as TE
 import GHC.Clock (getMonotonicTime)
 import Yuo.Guard (allowedCall)
 import Yuo.Log
-import Yuo.Process (runUtf8)
+import Yuo.Process (runUtf8Timed)
 import Yuo.Types
 
 data Risk = ReadOnly | Mutating
@@ -110,7 +111,14 @@ newtype Backend = Backend {invoke :: [Text] -> IO (Int, Text, Text)}
 
 -- | Runs the real executable, reading its output as UTF-8 bytes (never the console code page).
 processBackend :: FilePath -> Backend
-processBackend exe = Backend $ \args -> runUtf8 exe (map T.unpack args) Nothing ""
+processBackend = processBackendWith 60
+
+-- | A call that runs past @seconds@ is killed and reported as exit 124, so a hung accessibility
+-- read cannot hang a stage.
+processBackendWith :: Int -> FilePath -> Backend
+processBackendWith seconds exe = Backend $ \args ->
+  maybe (124, "", "blindly4 timed out after " <> T.pack (show seconds) <> " s") id
+    <$> runUtf8Timed seconds exe (map T.unpack args) Nothing ""
 
 data B4 = B4
   { b4Backend :: Backend
@@ -158,7 +166,7 @@ call :: B4 -> Origin -> [Text] -> IO (Int, Text, Text)
 call b4 origin args = do
   start <- nowPosix
   t0 <- getMonotonicTime
-  result <- case allowedCall origin args of
+  result <- case allowedCall origin (b4Pid b4) args of
     Left reason -> pure (64, "{\"error\":" <> jsonString reason <> ",\"code\":\"guard_refused\"}", "")
     Right () -> invoke (b4Backend b4) args
   t1 <- getMonotonicTime

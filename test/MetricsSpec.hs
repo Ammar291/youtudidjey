@@ -31,7 +31,10 @@ calls :: [Call]
 calls = [call 11 OLlm "find", call 12 OLlm "press", call 299 OSolution "find", call 301 OSolution "press", call 301.2 OObserver "inspect"]
 
 spec :: Spec
-spec = do
+spec = lateSpec >> mainSpec
+
+mainSpec :: Spec
+mainSpec = do
   describe "stats" $
     it "computes count, mean, nearest-rank median and p90, min and max" $
       stats [1, 2, 3, 4] `shouldBe` Stats 4 2.5 2 4 1 4
@@ -60,3 +63,18 @@ spec = do
     head' xs = case xs of
       x : _ -> x
       [] -> []
+
+lateSpec :: Spec
+lateSpec = describe "after a song that never played" $
+  it "does not flag the next song as assigned late because of the failed song's own calls" $ do
+    let evs =
+          [ ev 10 OSolution SongAssigned 0 []
+          , ev 14 OObserver PlayObserved 0 []
+          , ev 250 OSolution Paused 0 []
+          , ev 300 OSolution SongAssigned 1 []
+          , ev 390 OSolution StepError 1 []
+          , ev 400 OSolution SongAssigned 0 []
+          , ev 405 OObserver PlayObserved 0 []
+          ]
+        cs = [call 301 OSolution "find", call 350 OSolution "press"]
+    map smFlags (songMetrics Exploitation evs cs []) `shouldBe` [[], [], []]

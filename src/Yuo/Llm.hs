@@ -14,6 +14,7 @@ module Yuo.Llm
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (SomeAsyncException, fromException, throwIO, try)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
@@ -128,6 +129,16 @@ extractClaude = \case
       let s = T.strip t
        in if "```" `T.isPrefixOf` s then T.strip (T.dropWhileEnd (== '`') (T.dropWhile (/= '\n') s)) else s
 
+-- | A failing backend (broken pipe, missing CLI, ...) is a failed attempt, not a crashed stage.
+-- Asynchronous exceptions (cancellation, timeouts) still propagate.
+safely :: IO (Either Text Value) -> IO (Either Text Value)
+safely act =
+  try act >>= \case
+    Right r -> pure r
+    Left e
+      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+      | otherwise -> pure (Left ("llm backend failed: " <> T.pack (show e)))
+
 data AskConfig = AskConfig {acTimeoutSec :: Int, acBackoffs :: [Int]}
 
 -- | 120 s per attempt, then two retries after 2 s and 5 s.
@@ -146,7 +157,7 @@ askLoggedWith cfg logger backend purpose schema prompt = go (1 :: Int) (0 : acBa
       threadDelay (delay * 1000000)
       start <- nowPosix
       t0 <- getMonotonicTime
-      result <- maybe (Left "llm timeout") id <$> timeout (acTimeoutSec cfg * 1000000) (llmAsk backend (acTimeoutSec cfg) schema prompt)
+      result <- safely (maybe (Left "llm timeout") id <$> timeout (acTimeoutSec cfg * 1000000) (llmAsk backend (acTimeoutSec cfg) schema prompt))
       t1 <- getMonotonicTime
       logLlm logger $
         object

@@ -67,7 +67,7 @@ songMetrics stage events calls llm = zipWith3 metric [0 ..] assigned windowsEnd
     ordered = sortOn evT events
     assigned = [e | e <- ordered, evKind e == SongAssigned]
     windowsEnd = map (Just . evT) (drop 1 assigned) <> [Nothing]
-    pausedTimes = [evT e | e <- ordered, evKind e == Paused]
+    endTimes = [evT e | e <- ordered, evKind e `elem` [Paused, StepError, SongGaveUp]]
     inWindow t0 end t = t >= t0 && maybe True (t <) end
     metric i a end =
       let t0 = evT a
@@ -80,8 +80,11 @@ songMetrics stage events calls llm = zipWith3 metric [0 ..] assigned windowsEnd
           countBy cs = M.fromListWith (+) [(callOrigin c, 1 :: Int) | c <- cs]
           toPlay = [c | c <- acting, upTo (callStart c)]
           llmToPlay = [ms | (t, ms) <- mapMaybe llmTime llm, upTo t]
-          previousPause = listToMaybe (reverse [t | t <- pausedTimes, t < t0])
-          early = [c | i > 0, c <- acting, callOrigin c `elem` [OLlm, OSolution], Just p <- [previousPause], callStart c > p, callStart c < t0]
+          -- Calls after the previous song ended (paused, failed or given up) and before this
+          -- assignment belong to nobody: they mean the assignment was emitted late.
+          previousStart = if i > 0 then evT <$> listToMaybe (drop (i - 1) assigned) else Nothing
+          previousEnd = previousStart >>= \ps -> listToMaybe (reverse [t | t <- endTimes, t >= ps, t < t0])
+          early = [c | c <- acting, callOrigin c `elem` [OLlm, OSolution], Just p <- [previousEnd], callStart c > p, callStart c < t0]
           startPos = played >>= num "start_pos"
           flags =
             ["assigned late" | not (null early)]

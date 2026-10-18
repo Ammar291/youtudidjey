@@ -38,6 +38,7 @@ data B4Opts = B4Opts
   , b4StageName :: String
   , b4OriginName :: String
   , b4Exe :: FilePath
+  , b4SessionPid :: Maybe Int
   , b4Args :: [String]
   }
   deriving (Eq, Show)
@@ -94,6 +95,7 @@ b4P =
     <*> strOption (long "stage" <> metavar "exploration|exploitation")
     <*> strOption (long "origin" <> metavar "ORIGIN")
     <*> blindly4Opt
+    <*> optional (option auto (long "session-pid" <> metavar "PID" <> help "only this browser may be targeted"))
     <*> many (strArgument (metavar "-- ARGS..."))
 
 reportP :: Parser ReportOpts

@@ -39,7 +39,7 @@ solutionEnv stage self runDir blindly4 (Pid pid) dirs base =
   ]
     <> filter (\(k, _) -> map toLower k `notElem` dropped) base
   where
-    proxy = [self, "b4", "--run-dir", runDir, "--stage", T.unpack (stageText stage), "--origin", "solution", "--blindly4", blindly4, "--"]
+    proxy = [self, "b4", "--run-dir", runDir, "--stage", T.unpack (stageText stage), "--origin", "solution", "--blindly4", blindly4, "--session-pid", show pid, "--"]
     path = maybe "" snd (lookupCI "path" base)
     dropped = ["path", "anthropic_api_key", "openai_api_key", "codex_api_key", "pythonioencoding", "yuo_b4", "yuo_events", "yuo_chrome_pid"]
     lookupCI k = foldr (\(a, b) acc -> if map toLower a == k then Just (a, b) else acc) Nothing

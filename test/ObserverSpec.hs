@@ -5,10 +5,14 @@ import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Hspec
+import Control.Concurrent (threadDelay)
+import System.IO.Temp (withSystemTempDirectory)
+import Yuo.Blindly (Backend (..), ChromeGone (..), newB4)
+import Yuo.Log (withLogger)
 import Yuo.Observer
 import Yuo.Songs (Song (..))
 import Yuo.Tree
-import Yuo.Types (Path (..))
+import Yuo.Types (Path (..), Pid (..), Stage (..))
 
 json :: FilePath -> IO Value
 json f = eitherDecodeFileStrict' ("test/fixtures/" <> f) >>= either fail pure
@@ -38,7 +42,10 @@ plays :: [ObsOut] -> [PlayInfo]
 plays outs = [p | OutPlay p <- outs]
 
 spec :: Spec
-spec = describe "stepObserver" $ do
+spec = observerLoopSpec >> stepSpec
+
+stepSpec :: Spec
+stepSpec = describe "stepObserver" $ do
   it "does not count an ad as the song, then counts the song after the ad" $ do
     adProbe <- probeFromNodes 100 <$> titleOf "pane_ad.json" <*> pure watchUrl <*> nodesOf "player_ad_full.json"
     songProbe <- probeFromNodes 105 <$> titleOf "pane_playing.json" <*> pure watchUrl <*> nodesOf "player_children.json"
@@ -88,3 +95,12 @@ spec = describe "stepObserver" $ do
 
   it "stops waiting for a song that is paused before it ever played" $
     pausedAt 60 (Just 247) (assign lucky 40 Idle) `shouldBe` (Idle, [])
+
+-- | The observer is usually first to notice a closed browser; the stage must see ChromeGone itself.
+observerLoopSpec :: Spec
+observerLoopSpec = describe "withObserver" $
+  it "rethrows ChromeGone to the stage unwrapped" $
+    withSystemTempDirectory "obs" $ \dir -> withLogger dir $ \lg -> do
+      let gone = Backend (const (pure (77, "{\"error\":\"No visible windows for PID 7\",\"code\":\"accessibility_error\"}", "")))
+      b <- newB4 gone (Just (Pid 7)) lg Exploration
+      withObserver b Exploration (\o -> obsAssign o lucky 0 >> threadDelay 3000000) `shouldThrow` (\(ChromeGone _) -> True)

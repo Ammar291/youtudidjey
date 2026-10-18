@@ -2,6 +2,8 @@ module Main (main) where
 
 import qualified ActionSpec
 import qualified BlindlySpec
+import qualified CodegenSpec
+import qualified ExploitSpec
 import qualified ExploreSpec
 import qualified GuardSpec
 import qualified LintSpec
@@ -33,4 +35,6 @@ main = hspec $ do
   describe "Yuo.Explore" ExploreSpec.spec
   describe "Yuo.Codegen.Lint" LintSpec.spec
   describe "Yuo.SolutionEnv" SolutionEnvSpec.spec
+  describe "Yuo.Exploit" ExploitSpec.spec
+  describe "Yuo.Codegen" CodegenSpec.spec
   describe "Yuo.Metrics" MetricsSpec.spec

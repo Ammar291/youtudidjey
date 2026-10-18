@@ -16,6 +16,7 @@ import Yuo.Explore
 import Yuo.Llm
 import Yuo.Log
 import Yuo.Observer
+import Yuo.Pause (PauseResult (..))
 import Yuo.Songs (Song (..))
 import Yuo.Types
 
@@ -66,7 +67,17 @@ isGaveUp = \case
   _ -> False
 
 spec :: Spec
-spec = describe "startSong" $ do
+spec = pauseReportSpec >> startSongSpec
+
+pauseReportSpec :: Spec
+pauseReportSpec = describe "pauseReport" $ do
+  it "reports a pause that was pressed" $
+    pauseReport (PauseResult 10 200 "slider" True True) `shouldBe` Just (10, 200)
+  it "reports nothing when the pause control was never pressed" $
+    pauseReport (PauseResult 10 200 "slider" True False) `shouldBe` Nothing
+
+startSongSpec :: Spec
+startSongSpec = describe "startSong" $ do
   it "gives up after exactly 25 LLM steps when the song never plays" $ do
     playing <- newTVarIO Nothing
     (llm, prompts) <- scripted [step [findAction]]
@@ -89,6 +100,9 @@ spec = describe "startSong" $ do
     (ps !! 2) `shouldSatisfy` T.isInfixOf "unknown cmd: dance"
     [o | Object c <- calls, Just (Array a) <- [KM.lookup "argv" c], take 1 (foldr (:) [] a) == [String "press"], Just o <- [KM.lookup "origin" c]]
       `shouldBe` [String "llm"]
+    -- The per-step window-title read is the driver's, not an LLM decision.
+    [o | Object c <- calls, Just (Array a) <- [KM.lookup "argv" c], take 1 (foldr (:) [] a) == [String "inspect"], Just o <- [KM.lookup "origin" c]]
+      `shouldSatisfy` all (== String "driver")
 
   it "stops the stage when the browser window is gone" $ do
     playing <- newTVarIO Nothing

@@ -10,6 +10,7 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 import Yuo.Llm
+import qualified Data.Text as T
 import Yuo.Log
 
 decodeFile :: FilePath -> IO Value
@@ -26,7 +27,12 @@ spec = do
     it "falls back to parsing the result text" $
       extractClaude (object ["is_error" .= False, "result" .= ("{\"n\":2}" :: String)]) `shouldBe` Right (object ["n" .= (2 :: Int)])
 
-  describe "askLoggedWith" $
+  describe "askLoggedWith" $ do
+    it "turns a crashing backend into a failed attempt instead of aborting the stage" $
+      withSystemTempDirectory "run" $ \dir -> do
+        let crash = LlmBackend "crash" (\_ _ _ -> ioError (userError "broken pipe"))
+        r <- withLogger dir $ \logger -> askLoggedWith (AskConfig 5 []) logger crash PStep (object []) "prompt"
+        r `shouldSatisfy` either (T.isInfixOf "broken pipe") (const False)
     it "times out, retries twice, and logs every attempt" $
       withSystemTempDirectory "run" $ \dir -> do
         let hung = LlmBackend "hung" (\_ _ _ -> forever (threadDelay 1000000))

@@ -6,6 +6,7 @@ module Yuo.Explore
   , SongOutcome (..)
   , startSong
   , finishSong
+  , pauseReport
   , exploreSong
   , runExploration
   ) where
@@ -65,9 +66,10 @@ logDriver env kind song fields = do
   t <- nowPosix
   logEvent (b4Logger (eeB4 env)) (Event t Exploration ODriver kind (Just song) (KM.fromList fields))
 
+-- | The driver's own read of the window title (not an LLM decision).
 paneTitle :: B4 -> IO Text
 paneTitle b =
-  runRead b OLlm (Inspect (Path "0.1")) >>= \case
+  runRead b ODriver (Inspect (Path "0.1")) >>= \case
     Right (Object o) | Just (String t) <- KM.lookup "title" o -> pure t
     _ -> pure ""
 
@@ -155,7 +157,7 @@ startSong env seqNo song = do
 finishSong :: ExploreEnv -> Song -> PlayInfo -> IO (Maybe PauseResult)
 finishSong env song info = do
   let b = eeB4 env
-      generic role limit = either errorText (capXml 5000) <$> runReadText b OLlm (Find findQ {fqRole = Just role, fqLimit = limit, fqXml = True})
+      generic role limit = either errorText (capXml 5000) <$> runReadText b ODriver (Find findQ {fqRole = Just role, fqLimit = limit, fqXml = True})
   pane <- paneTitle b
   buttons <- generic "AXButton" 60
   sliders <- generic "AXSlider" 10
@@ -166,15 +168,17 @@ finishSong env song info = do
       pure Nothing
     Right p -> do
       result <- waitAndPause b (eeObserver env) info p (eeMaxPlay env)
-      logDriver env Paused song
-        [ "paused_at" .= prPausedAt result
-        , "duration" .= prDuration result
-        , "duration_source" .= prDurationSource result
-        , "resynced" .= prResynced result
-        , "pressed" .= prPressed result
-        ]
-      obsPaused (eeObserver env) (prPausedAt result) (Just (prDuration result))
+      let details = ["duration" .= prDuration result, "duration_source" .= prDurationSource result, "resynced" .= prResynced result]
+      case pauseReport result of
+        Just (t, d) -> do
+          logDriver env Paused song (("paused_at" .= t) : details)
+          obsPaused (eeObserver env) t (Just d)
+        Nothing -> logDriver env StepError song (("reason" .= ("the pause control could not be pressed" :: Text)) : details)
       pure (Just result)
+
+-- | A pause counts (event, observer margin) only when the control was actually pressed.
+pauseReport :: PauseResult -> Maybe (Double, Int)
+pauseReport r = if prPressed r then Just (prPausedAt r, prDuration r) else Nothing
 
 -- | Updates the playbook from what happened (runs while the song plays).
 reflect :: ExploreEnv -> Song -> [StepRecord] -> IO ()

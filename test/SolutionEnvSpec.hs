@@ -22,7 +22,7 @@ spec = do
       lookup "YUO_CHROME_PID" env `shouldBe` Just "42"
     it "gives solution.py the logging proxy as its only way to blindly4" $
       (lookup "YUO_B4" env >>= decode . BLC.pack)
-        `shouldBe` Just ["y.exe", "b4", "--run-dir", "logs/x", "--stage", "exploitation", "--origin", "solution", "--blindly4", "b.exe", "--" :: String]
+        `shouldBe` Just ["y.exe", "b4", "--run-dir", "logs/x", "--stage", "exploitation", "--origin", "solution", "--blindly4", "b.exe", "--session-pid", "42", "--" :: String]
     it "writes solution events to their own file" $
       lookup "YUO_EVENTS" env `shouldBe` Just "logs/x\\solution-events.jsonl"
     it "removes LLM credentials and LLM CLIs from the environment" $ do

@@ -25,7 +25,8 @@ contractText =
     , ""
     , "The browser: Chrome is already open on YouTube; its process id is in the environment variable YUO_CHROME_PID. Never open or close the browser."
     , "blindly4: call it ONLY through the command prefix in the environment variable YUO_B4 (a JSON array of strings): subprocess.run([*prefix, *args], capture_output=True) with args a blindly4 argument list that includes \"--pid\", pid. Decode stdout/stderr as UTF-8. stdout is JSON (XML with --format xml). Exit codes: 0 ok, 64 usage error or refused by the safety guard, 77 accessibility error (target gone, not foreground, ...)."
-    , "The proxy refuses: type, click, paste; press/set-value/focus without --expect-description; labels starting with subscribe, like, dislike, share, save, join, comment, reply, report, sign in, buy, premium, download, thanks, clip, remix, notify, create, upload; keys other than escape, f5, a digit, or return/enter given with --target-path and --require-value."
+    , "Every call except apps and schema must include --pid with the YUO_CHROME_PID value; the proxy refuses calls aimed at any other window."
+    , "The proxy refuses: type, click, paste; press/set-value/focus without --expect-description; labels that start with, or are fragments of, subscribe, like, dislike, share, save, join, comment, reply, report, sign in, buy, premium, download, thanks, clip, remix, notify, create, upload; keys other than escape, f5, a digit, or return/enter given with --target-path and --require-value."
     , "Keyboard and pointer input (key, hover, scroll) need Chrome in the foreground: run \"activate\" first when needed."
     , "Tree paths change whenever the page changes: find an element again right before acting on it; when reusing a remembered path, check it first and fall back to find."
     , "Read-only lookups may run concurrently (concurrent.futures; the first successful result wins); input commands must run one at a time."
@@ -45,7 +46,8 @@ fpRulesText =
     , "- Immutable data only: @dataclass(frozen=True), NamedTuple, tuples, frozenset. No mutable globals."
     , "- Use lambdas (at least 5), map/filter, functools.reduce, functools.partial, itertools (cycle, islice, repeat, takewhile, dropwhile, count), and a compose/pipe helper."
     , "- Forbidden: while loops (iterate lazily: e.g. next(filter(ready, map(probe, itertools.repeat(None))))), global, nonlocal, augmented assignment (+= etc.), del, item or attribute assignment, mutating methods (append, extend, insert, pop, remove, clear, update, setdefault, popitem, add, discard, sort, reverse), classes other than frozen dataclasses / NamedTuple / Enum."
-    , "- Forbidden imports: anthropic, openai, requests, urllib, http, socket, httpx, aiohttp, ctypes, comtypes, pywinauto, uiautomation, win32api, win32gui, win32con, selenium, playwright, webbrowser; no os.system/os.popen/os.spawn*/os.exec*; no string mentioning claude, codex or blindly4.exe; every subprocess call's command must be built from the YUO_B4 prefix."
+    , "- Forbidden imports: anthropic, openai, requests, urllib, http, socket, httpx, aiohttp, ctypes, comtypes, pywinauto, uiautomation, win32*, selenium, playwright, webbrowser, asyncio, importlib, multiprocessing, ssl and other network modules; no __import__/eval/exec/compile; no os.system/os.popen/os.startfile/os.spawn*/os.exec*; no string mentioning claude, codex or blindly4.exe."
+    , "- Every subprocess call is a direct call (not via partial or an alias) whose command is exactly [*prefix, *args] with prefix = the YUO_B4 array used whole — never index or slice it."
     ]
 
 -- | How exploration's own (non-LLM) driver timed the pause — part of the collected data.

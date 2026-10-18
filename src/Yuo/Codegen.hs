@@ -3,6 +3,7 @@
 module Yuo.Codegen
   ( CodegenEnv (..)
   , generateSolution
+  , liveSmoke
   , condensedTraces
   , codeSchema
   ) where
@@ -15,7 +16,7 @@ import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO.Utf8 as TU
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import Yuo.Codegen.Contract
 import Yuo.Codegen.Lint (lintSolution)
@@ -33,6 +34,7 @@ data CodegenEnv = CodegenEnv
   , cgBlindly4 :: FilePath
   , cgOut :: FilePath
   , cgSchema :: Text
+  , cgSmoke :: Int -> FilePath -> IO (Either Text ()) -- ^ attempt number, candidate file
   }
 
 -- | Writing a whole program takes minutes, not seconds.
@@ -103,11 +105,12 @@ codeOf = \case
   Object o | Just (String c) <- KM.lookup "code" o, not (T.null (T.strip c)) -> Right c
   _ -> Left "reply has no code"
 
--- | Passes when solution.py exits 0, reports song 0 playing and paused, and the observer agrees.
-smoke :: CodegenEnv -> Int -> IO (Either Text ())
-smoke env n = do
-  let dir = cgRunDir env </> ("smoke-" <> show n)
-  (code, stderrTail) <- runSolution (SolutionRun Exploration dir (cgOut env) (cgSongs env) ["--max-songs", "1", "--max-play-seconds", "20"] (cgBlindly4 env) 240)
+-- | Passes when the candidate exits 0, reports song 0 playing and paused, and the observer agrees.
+-- @liveSmoke runDir songs blindly4 attempt candidate@ plays song 0 for 20 s with the candidate.
+liveSmoke :: FilePath -> FilePath -> FilePath -> Int -> FilePath -> IO (Either Text ())
+liveSmoke runDir songs blindly4 n candidate = do
+  let dir = runDir </> ("smoke-" <> show n)
+  (code, stderrTail) <- runSolution (SolutionRun Exploration dir candidate songs ["--max-songs", "1", "--max-play-seconds", "20"] blindly4 240)
   events <- jsonLines (dir </> "events.jsonl") :: IO [Event]
   calls <- jsonLines (dir </> "blindly4.jsonl") :: IO [Call]
   let kinds src = [evKind e | e <- events, evSource e == src]
@@ -134,14 +137,18 @@ generateSolution env = do
       attempt n previous reply = case reply >>= codeOf of
         Left e -> retry n previous ("the reply carried no code: " <> e)
         Right code -> do
-          createDirectoryIfMissing True (takeDirectory (cgOut env))
-          TU.writeFile (cgOut env) code
-          violations <- lintSolution (cgOut env)
+          -- Candidates live in the run directory; only a validated one replaces cgOut.
+          let candidate = cgRunDir env </> ("solution-attempt-" <> show n <> ".py")
+          TU.writeFile candidate code
+          violations <- lintSolution candidate
           if not (null violations)
             then retry n code (T.unlines ("lint violations:" : violations))
             else
-              smoke env n >>= \case
-                Right () -> pure (Right (cgOut env))
+              cgSmoke env n candidate >>= \case
+                Right () -> do
+                  createDirectoryIfMissing True (takeDirectory (cgOut env))
+                  copyFile candidate (cgOut env)
+                  pure (Right (cgOut env))
                 Left problems -> retry n code (T.unlines ["smoke run failed:", problems])
       retry n code problems
         | n >= (3 :: Int) = pure (Left problems)

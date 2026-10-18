@@ -9,7 +9,7 @@ import Data.List (find)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Yuo.Types (Origin (..))
+import Yuo.Types (Origin (..), Pid (..))
 
 -- | Labels of controls with public or account side effects, matched as a case-insensitive prefix
 -- so that a song merely containing a word ("Madonna - Like A Prayer") is still playable.
@@ -32,10 +32,17 @@ options = \case
   _ : rest -> options rest
   [] -> []
 
--- | Opening and closing the browser belong to the driver; the LLM and solution.py only use the page.
-allowedCall :: Origin -> [Text] -> Either Text ()
-allowedCall _ [] = Left "empty blindly4 call"
-allowedCall origin (cmd : args)
+-- | Opening and closing the browser belong to the driver; the LLM and solution.py only use the page,
+-- and — when the session's browser pid is known — only that browser: a call without @--pid@ would
+-- reach whatever window is in front, and another pid could be the user's own signed-in Chrome.
+allowedCall :: Origin -> Maybe Pid -> [Text] -> Either Text ()
+allowedCall _ _ [] = Left "empty blindly4 call"
+allowedCall origin session (cmd : args)
+  | origin /= ODriver
+  , Just (Pid p) <- session
+  , cmd `notElem` ["apps", "schema"]
+  , opt "pid" /= Just (T.pack (show p)) =
+      Left ("every call must target the session's browser with --pid " <> T.pack (show p))
   | cmd `elem` readOnlyOrHarmless = Right ()
   | cmd == "open" && origin /= ODriver = Left "only yuotudidjey itself opens the browser"
   | cmd == "open" =
@@ -48,13 +55,18 @@ allowedCall origin (cmd : args)
       Left (cmd <> " is not allowed: use set-value or press with --expect-description")
   | otherwise = Left ("blindly4 command not allowed: " <> cmd)
   where
+    folded = T.toCaseFold
     opt name = lookup ("--" <> name) (options args)
     labelled = case T.strip <$> opt "expect-description" of
       Nothing -> Left (cmd <> " needs --expect-description so blindly4 verifies its target")
       Just "" -> Left (cmd <> " needs a non-empty --expect-description")
-      Just label -> case find (`T.isPrefixOf` T.toCaseFold label) deniedLabels of
-        Just word -> Left ("refused: '" <> label <> "' is a public side-effect control (" <> word <> ")")
-        Nothing -> Right ()
+      Just label
+        -- blindly4 matches the label as a substring, so a fragment of a denied word ("ubscribe")
+        -- would still reach that control.
+        | Just word <- find (\w -> w `T.isPrefixOf` folded label || folded label `T.isInfixOf` w) deniedLabels ->
+            Left ("refused: '" <> label <> "' could name a public side-effect control (" <> word <> ")")
+        | T.length label < 3 -> Left "expected label too short to identify a control"
+        | otherwise -> Right ()
     key = case T.toLower <$> opt "key" of
       Just k
         | k `elem` ["escape", "esc", "f5"] || (T.length k == 1 && T.all isDigit k) -> Right ()

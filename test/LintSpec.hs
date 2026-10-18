@@ -26,3 +26,9 @@ spec = describe "lintSolution" $ do
     vs <- lintSolution "test/fixtures/fp_bad_bypass.py"
     vs `shouldSatisfy` mentions "ctypes"
     vs `shouldSatisfy` mentions "YUO_B4"
+  it "rejects every indirect way around the YUO_B4 proxy" $ do
+    vs <- lintSolution "test/fixtures/fp_bad_bypass2.py"
+    let flagged n = any (T.isPrefixOf ("line " <> T.pack (show (n :: Int)) <> ":")) vs
+    filter (not . flagged) [1, 3, 18, 19, 20, 21, 22, 23, 24] `shouldBe` []
+  it "still accepts the generated style of proxy call" $
+    lintSolution "test/fixtures/fp_good.py" `shouldReturn` []

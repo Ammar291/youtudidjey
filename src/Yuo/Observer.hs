@@ -15,7 +15,9 @@ module Yuo.Observer
   ) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (myThreadId, throwTo)
 import Control.Concurrent.Async (concurrently, link, withAsync)
+import Control.Exception (catch)
 import Control.Concurrent.STM
 import Control.Monad (forM_, forever)
 import Data.Aeson (Value (..), (.=))
@@ -171,7 +173,10 @@ withObserver b4 stage act = do
               forM_ [i | OutPlay i <- outs] (writeTVar latest . Just)
               pure outs
         mapM_ (logOut b4 stage) outs
-  withAsync loop $ \a -> link a >> act observer
+  -- The observer is usually the first to see a closed browser: hand ChromeGone to the stage as is
+  -- (link would wrap it in ExceptionInLinkedThread and the stage's handler would miss it).
+  parent <- myThreadId
+  withAsync (loop `catch` \(gone :: ChromeGone) -> throwTo parent gone) $ \a -> link a >> act observer
 
 obs :: B4 -> Command 'ReadOnly -> IO [Node]
 obs b4 cmd = either (const []) id . (>>= either (Left . B4Unexpected 0) Right . parseMatches) <$> runRead b4 OObserver cmd

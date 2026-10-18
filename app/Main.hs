@@ -12,7 +12,7 @@ import System.IO (hSetEncoding, stderr, stdout, utf8)
 import Yuo.Blindly
 import Yuo.Cli
 import Yuo.Log
-import Yuo.Codegen (CodegenEnv (..), generateSolution)
+import Yuo.Codegen (CodegenEnv (..), generateSolution, liveSmoke)
 import Yuo.Codegen.Lint (lintSolution)
 import Yuo.Exploit (ExploitConfig (..), runExploitation)
 import Yuo.Report (writeReport)
@@ -37,7 +37,7 @@ proxy o = do
   stage <- maybe (die "bad --stage") pure (parseStage (T.pack (b4StageName o)))
   origin <- maybe (die "bad --origin") pure (parseOrigin (T.pack (b4OriginName o)))
   (code, out, err) <- withLogger (b4RunDir o) $ \logger -> do
-    b4 <- newB4 (processBackend (b4Exe o)) Nothing logger stage
+    b4 <- newB4 (processBackend (b4Exe o)) (Pid <$> b4SessionPid o) logger stage
     runRawArgv b4 origin (map T.pack (b4Args o))
   BS.hPut stdout (TE.encodeUtf8 out)
   BS.hPut stderr (TE.encodeUtf8 err)
@@ -56,7 +56,7 @@ explore o = do
     b <- newB4 (processBackend (exBlindly4 o)) Nothing logger Exploration
     schema <- either (const "") schemaDoc <$> runRead b ODriver Schema
     let writer = backendFor (T.pack (exLlm o)) (T.pack (exCodegenModel o))
-    generated <- generateSolution (CodegenEnv logger writer dir (exSongs o) (exBlindly4 o) "generated/solution.py" schema)
+    generated <- generateSolution (CodegenEnv logger writer dir (exSongs o) (exBlindly4 o) "generated/solution.py" schema (liveSmoke dir (exSongs o) (exBlindly4 o)))
     either (\e -> die ("solution.py was rejected after three repairs:\n" <> T.unpack e)) (\p -> putStrLn ("solution.py: " <> p)) generated
 
 -- | Exploitation stage: the generated solution.py alone, with no LLM reachable.
