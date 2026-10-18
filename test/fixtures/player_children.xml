@@ -1,0 +1,17 @@
+<matches truncated="false">
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0" title="YouTube Video Player" id="movie_player" actions="AXPress AXScrollToVisible" frame="43,206,1189,669" focused="true" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.0" actions="AXPress AXScrollToVisible" frame="43,206,1189,669" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.1" id="player-overlay-layout:e" actions="AXPress AXScrollToVisible" frame="43,206,1189,669" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.2" actions="AXScrollToVisible" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.3" id="caption-window-1" actions="AXPress AXScrollToVisible" frame="294,738,781,36" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.4" actions="AXScrollToVisible" frame="58,797,1159,8" enabled="false" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.5" title="Pause (k)" actions="AXPress AXScrollToVisible" frame="58,814,50,51" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.6" actions="AXPress AXScrollToVisible" frame="123,814,50,51" />
+  <AXSlider path="0.1.0.0.1.1.0.1.0.0.1.0.0.7" title="Volume" value="100% volume" actions="AXScrollToVisible" />
+  <AXGroup path="0.1.0.0.1.1.0.1.0.0.1.0.0.8" actions="AXPress AXScrollToVisible" frame="183,814,125,51" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.9" title="Subtitles/closed captions unavailable" actions="AXPress AXScrollToVisible" frame="911,814,61,51" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.10" title="Settings" actions="AXShowMenu AXScrollToVisible" frame="971,814,61,51" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.11" title="Theater mode (t)" actions="AXPress AXScrollToVisible" frame="1031,814,61,51" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.12" title="Play on TV" actions="AXShowMenu AXScrollToVisible" frame="1091,814,61,51" />
+  <AXButton path="0.1.0.0.1.1.0.1.0.0.1.0.0.13" title="Full screen (f)" actions="AXPress AXScrollToVisible" frame="1151,814,61,51" />
+</matches>

@@ -7,6 +7,7 @@ import qualified MatchSpec
 import qualified SongsSpec
 import Test.Hspec
 import qualified TimeSpec
+import qualified TreeSpec
 
 main :: IO ()
 main = hspec $ do
@@ -16,3 +17,4 @@ main = hspec $ do
   describe "Yuo.Guard" GuardSpec.spec
   describe "Yuo.Log" LogSpec.spec
   describe "Yuo.Blindly" BlindlySpec.spec
+  describe "Yuo.Tree" TreeSpec.spec
