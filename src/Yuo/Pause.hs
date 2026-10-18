@@ -4,6 +4,8 @@ module Yuo.Pause
   ( PauseResult (..)
   , waitAndPause
   , freshProgress
+  , acceptStart
+  , acceptResync
   , sleepUntil
   ) where
 
@@ -38,8 +40,9 @@ freshProgress b obs = do
   player <- atomically (obsPlayer obs)
   case player of
     Just p | Just (x, y) <- nCenter p -> do
-      void (withInput b $ \tok -> runInput b ODriver tok Activate >> runInput b ODriver tok (Hover x y))
-      threadDelay 300000
+      -- A real pointer movement across the player, then time for YouTube to repaint its controls.
+      void (withInput b $ \tok -> runInput b ODriver tok Activate >> runInput b ODriver tok (Hover (x - 40) y) >> runInput b ODriver tok (Hover x y))
+      threadDelay 800000
       sliders <- nodes b (Find findQ {fqRole = Just "AXSlider", fqTitle = Just "Seek slider", fqUnder = Just (nPath p), fqDepth = 6})
       t <- nowPosix
       pure ((t,) <$> (listToMaybe sliders >>= nValue >>= parseProgress))
@@ -58,6 +61,29 @@ sleepUntil deadline = do
           `orElse` (readTVar deadline >>= \d' -> check (d' /= d) >> pure True)
     when moved (sleepUntil deadline)
 
+-- | Hovering usually refreshes the slider text, but not always: a stale reading must never move the
+-- pause. A reading is believed only when the start it implies (time − position) agrees with what is
+-- already known to within 10 s.
+agrees :: Double -> Double -> Bool
+agrees known implied = abs (implied - known) <= 10
+
+-- | The reading right after playback is confirmed: a song-length (not an ad's) slider consistent
+-- with the observed start gives the exact start and duration.
+acceptStart :: Double -> Int -> (Double, Progress) -> Maybe (Double, Int)
+acceptStart observedStart planned (t, Progress pos d)
+  | (d >= 60 || abs (d - planned) <= 3) && agrees observedStart implied = Just (implied, d)
+  | otherwise = Nothing
+  where
+    implied = t - fromIntegral pos
+
+-- | The re-sync before the deadline corrects drift (an ad or a stall of a few seconds), nothing more.
+acceptResync :: Double -> Int -> (Double, Progress) -> Maybe Double
+acceptResync start dur (t, Progress pos d)
+  | abs (d - dur) <= 3 && agrees start implied = Just implied
+  | otherwise = Nothing
+  where
+    implied = t - fromIntegral pos
+
 -- | The latency of the pause call itself, subtracted from the deadline.
 pauseLatency :: Double
 pauseLatency = 0.6
@@ -66,9 +92,7 @@ waitAndPause :: B4 -> Observer -> PlayInfo -> PausePlan -> Maybe Int -> IO Pause
 waitAndPause b obs info plan maxPlay = do
   first <- freshProgress b obs
   let planned = ppDurationSec plan
-      -- A reading is trusted when it is song-length or agrees with the plan (not an ad's slider).
-      trusted (t, Progress pos d) = if d >= 60 || abs (d - planned) <= 3 then Just (t - fromIntegral pos, d) else Nothing
-      (start, dur, source) = case first >>= trusted of
+      (start, dur, source) = case first >>= acceptStart (piStartEst info) planned of
         Just (s, d) -> (s, d, "slider after hover")
         Nothing -> (piStartEst info, planned, "llm plan")
       deadlineFrom s =
@@ -84,7 +108,7 @@ waitAndPause b obs info plan maxPlay = do
     if d0 - now > 5
       then
         freshProgress b obs >>= \case
-          Just (t, Progress pos d) | abs (d - dur) <= 3 -> atomically (writeTVar deadline (deadlineFrom (t - fromIntegral pos))) >> pure True
+          Just reading | Just s <- acceptResync start dur reading -> atomically (writeTVar deadline (deadlineFrom s)) >> pure True
           _ -> pure False
       else pure False
   sleepUntil deadline

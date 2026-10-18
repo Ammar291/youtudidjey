@@ -57,4 +57,5 @@ driverTimingText =
     [ "How the exploration stage's timer paused each song (its calls appear in the trace with origin \"driver\"):"
     , "- Right after playback was confirmed it hovered the pointer over the centre of the YouTube player (\"hover\" with the player element's frame centre) and then read the player's seek slider; the slider's value text (\"X Minutes Y Seconds of A Minutes B Seconds\") is only up to date right after such a hover — without it the text can be stale, even showing a finished ad."
     , "- It computed start = now − position and deadline = start + duration − 3 s − 0.6 s (the pause call's own latency), slept until 15 s before the deadline, hovered and read again to re-sync, slept until the deadline, then pressed the pause control."
+    , "- Even right after a hover the text is sometimes stale, so a reading was believed only if its duration matched and the start it implied (now − position) was within 10 s of the start already known (the moment playback was first seen); otherwise the earlier estimate was kept. Hover by moving across the player (e.g. 40 px left of its centre, then the centre) and wait about 0.8 s before reading."
     ]
