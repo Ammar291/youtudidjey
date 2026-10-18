@@ -1,8 +1,10 @@
 module Main (main) where
 
+import qualified SongsSpec
 import Test.Hspec
+import qualified TimeSpec
 
 main :: IO ()
-main = hspec $
-  describe "scaffold" $
-    it "builds" True
+main = hspec $ do
+  describe "Yuo.Time" TimeSpec.spec
+  describe "Yuo.Songs" SongsSpec.spec
