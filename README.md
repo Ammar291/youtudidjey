@@ -34,7 +34,9 @@ cabal test                            # unit tests (no browser, no LLM)
 cabal install exe:yuotudidjey --installdir=bin --install-method=copy --overwrite-policy=always
 ```
 
-The blindly4 submodule points at a local branch `yuotudidjey-patches`; the same changes are in
+The blindly4 submodule points at branch `yuotudidjey-patches` of
+[Ammar291/blindly4](https://github.com/Ammar291/blindly4/tree/yuotudidjey-patches), a fork of
+`aleski-green/blindly4`. The same changes are in
 [`patches/blindly4-yuotudidjey.patch`](patches/blindly4-yuotudidjey.patch) (apply with `git am` on
 `aleski-green/blindly4@1369de4`). The patch adds: lazy `find` (≈ 4–5× faster), `find --identifier/--under`,
 `hover`, `open --chrome-profile` (isolated, accessible Chrome), `--format xml`, and
