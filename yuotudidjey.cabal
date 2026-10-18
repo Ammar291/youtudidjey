@@ -21,16 +21,22 @@ common shared
         stm,
         text,
         time,
-        unicode-transforms
+        unicode-transforms,
+        Win32
 
 library
     import:           shared
     hs-source-dirs:   src
     exposed-modules:
+        Yuo.Blindly
         Yuo.Cli
+        Yuo.Concurrent
+        Yuo.Guard
+        Yuo.Log
         Yuo.Match
         Yuo.Songs
         Yuo.Time
+        Yuo.Types
     build-depends:
         optparse-applicative
 
@@ -47,6 +53,9 @@ test-suite spec
     hs-source-dirs:   test
     main-is:          Spec.hs
     other-modules:
+        BlindlySpec
+        GuardSpec
+        LogSpec
         MatchSpec
         SongsSpec
         TimeSpec

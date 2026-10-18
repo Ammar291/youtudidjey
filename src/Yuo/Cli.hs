@@ -1,6 +1,6 @@
 -- | Command-line interface: one parser per subcommand, pure and separate from dispatch.
 module Yuo.Cli
-  ( Command (..)
+  ( CliCommand (..)
   , ExploreOpts (..)
   , ExploitOpts (..)
   , B4Opts (..)
@@ -46,10 +46,10 @@ data ReportOpts = ReportOpts
   }
   deriving (Eq, Show)
 
-data Command
+data CliCommand
   = Explore ExploreOpts
   | Exploit ExploitOpts
-  | B4 B4Opts
+  | Proxy B4Opts
   | Report ReportOpts
   deriving (Eq, Show)
 
@@ -97,18 +97,18 @@ reportP =
     <*> strOption (long "exploit" <> metavar "DIR")
     <*> strOption (long "out" <> metavar "DIR" <> value "results" <> showDefault)
 
-commandP :: Parser Command
+commandP :: Parser CliCommand
 commandP =
   hsubparser $
     command "explore" (info (Explore <$> exploreP) (progDesc "LLM exploration stage; generates solution.py"))
       <> command "exploit" (info (Exploit <$> exploitP) (progDesc "run solution.py with no LLM"))
-      <> command "b4" (info (B4 <$> b4P) (progDesc "logging proxy for blindly4 (used by solution.py)"))
+      <> command "b4" (info (Proxy <$> b4P) (progDesc "logging proxy for blindly4 (used by solution.py)"))
       <> command "report" (info (Report <$> reportP) (progDesc "compare both stages"))
 
-commandInfo :: ParserInfo Command
+commandInfo :: ParserInfo CliCommand
 commandInfo = info (commandP <**> helper) (fullDesc <> progDesc "YouTube DJ driven through blindly4")
 
-parseCommand :: [String] -> Either String Command
+parseCommand :: [String] -> Either String CliCommand
 parseCommand args = case execParserPure defaultPrefs commandInfo args of
   Success c -> Right c
   Failure f -> Left (fst (renderFailure f "yuotudidjey"))
