@@ -6,6 +6,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Hspec
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM (atomically)
 import System.IO.Temp (withSystemTempDirectory)
 import Yuo.Blindly (Backend (..), ChromeGone (..), newB4)
 import Yuo.Log (withLogger)
@@ -42,7 +43,7 @@ plays :: [ObsOut] -> [PlayInfo]
 plays outs = [p | OutPlay p <- outs]
 
 spec :: Spec
-spec = observerLoopSpec >> stepSpec
+spec = observerLoopSpec >> adMarkerSpec >> stepSpec
 
 stepSpec :: Spec
 stepSpec = describe "stepObserver" $ do
@@ -104,3 +105,32 @@ observerLoopSpec = describe "withObserver" $
       let gone = Backend (const (pure (77, "{\"error\":\"No visible windows for PID 7\",\"code\":\"accessibility_error\"}", "")))
       b <- newB4 gone (Just (Pid 7)) lg Exploration
       withObserver b Exploration (\o -> obsAssign o lucky 0 >> threadDelay 3000000) `shouldThrow` (\(ChromeGone _) -> True)
+
+-- | A watch page with audio, the song's title and a Pause button, plus whatever ad markers given.
+fakeWatchPage :: [Text] -> Backend
+fakeWatchPage markers = Backend $ \args -> pure (0, reply args, "")
+  where
+    has flag value args = any (== [flag, value]) (pairs args)
+    pairs xs = zipWith (\a b -> [a, b]) xs (drop 1 xs)
+    node path role title ident = "{\"role\":\"" <> role <> "\",\"path\":\"" <> path <> "\",\"title\":\"" <> title <> "\",\"identifier\":\"" <> ident <> "\"}"
+    matches ns = "{\"matches\":[" <> T.intercalate "," ns <> "],\"truncated\":false}"
+    reply args
+      | take 1 args == ["inspect"] && has "--path" "0.1" args = "{\"title\":\"Daft Punk - Get Lucky (Official Audio) - YouTube - Audio playing - Google Chrome\"}"
+      | take 1 args == ["inspect"] = "{\"title\":\"Address and search bar\",\"value\":\"youtube.com/watch?v=5NV6Rdv1a3I\"}"
+      | has "--title" "Address and search bar" args = matches ["{\"role\":\"AXTextField\",\"path\":\"0.9\",\"title\":\"Address and search bar\",\"value\":\"youtube.com/watch?v=5NV6Rdv1a3I\"}"]
+      | has "--identifier" "movie_player" args = matches [node "0.5" "AXGroup" "YouTube Video Player" "movie_player"]
+      | has "--title" "" args && has "--depth" "1" args = matches [node "0.5" "AXGroup" "YouTube Video Player" "movie_player", node "0.5.1" "AXButton" "Pause (k)" ""]
+      | otherwise = matches [node "0.5.2" "AXButton" m "" | m <- markers, any (\t -> has "--title" t args && t `T.isInfixOf` m) ["Sponsored", "My Ad Center", "Skip"]]
+
+adMarkerSpec :: Spec
+adMarkerSpec = describe "withObserver ad detection" $ do
+  it "does not count a pod's next ad that only shows My Ad Center as the song" $
+    withSystemTempDirectory "obs" $ \dir -> withLogger dir $ \lg -> do
+      b <- newB4 (fakeWatchPage ["My Ad Center"]) (Just (Pid 7)) lg Exploration
+      seen <- withObserver b Exploration $ \o -> obsAssign o lucky 0 >> threadDelay 2500000 >> atomically (obsPlayInfo o)
+      seen `shouldBe` Nothing
+  it "confirms the song once no ad marker is on screen" $
+    withSystemTempDirectory "obs" $ \dir -> withLogger dir $ \lg -> do
+      b <- newB4 (fakeWatchPage []) (Just (Pid 7)) lg Exploration
+      seen <- withObserver b Exploration $ \o -> obsAssign o lucky 0 >> threadDelay 2500000 >> atomically (obsPlayInfo o)
+      fmap (songQuery . piSong) seen `shouldBe` Just "Daft Punk Get Lucky"

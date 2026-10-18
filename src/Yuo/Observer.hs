@@ -16,7 +16,7 @@ module Yuo.Observer
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (myThreadId, throwTo)
-import Control.Concurrent.Async (concurrently, link, withAsync)
+import Control.Concurrent.Async (concurrently, link, mapConcurrently, withAsync)
 import Control.Exception (catch)
 import Control.Concurrent.STM
 import Control.Monad (forM_, forever)
@@ -238,9 +238,10 @@ awaitingProbe b4 player cache song = do
       case ctl of
         Nothing -> pure (probeFromNodes t pane Nothing [])
         Just (mp, ns) -> do
+          -- The next ad of a pod shows "My Ad Center" or "Skip" before its "Sponsored" label renders.
           (ads, sliders) <-
             concurrently
-              (obs b4 (Find findQ {fqTitle = Just "Sponsored", fqUnder = Just mp, fqDepth = 5}))
+              (concat <$> mapConcurrently (\marker -> obs b4 (Find findQ {fqTitle = Just marker, fqUnder = Just mp, fqDepth = 5})) ["Sponsored", "My Ad Center", "Skip"])
               (obs b4 (Find findQ {fqRole = Just "AXSlider", fqTitle = Just "Seek slider", fqUnder = Just mp, fqDepth = 6}))
           pure (probeFromNodes t pane addr (ns <> ads <> sliders))
     else pure (probeFromNodes t pane Nothing [])
