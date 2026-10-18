@@ -29,6 +29,7 @@ data ExploitOpts = ExploitOpts
   , xpMaxSongs :: Maybe Int -- ^ Nothing = play forever
   , xpSolution :: FilePath
   , xpBlindly4 :: FilePath
+  , xpMaxPlay :: Maybe Int
   }
   deriving (Eq, Show)
 
@@ -84,6 +85,7 @@ exploitP =
     <*> optional (option auto (long "max-songs" <> metavar "N" <> help "stop after N songs (default: forever)"))
     <*> strOption (long "solution" <> metavar "FILE" <> value "generated/solution.py" <> showDefault)
     <*> blindly4Opt
+    <*> optional (option auto (long "max-play-seconds" <> metavar "S" <> help "development only: pause after S seconds"))
 
 b4P :: Parser B4Opts
 b4P =

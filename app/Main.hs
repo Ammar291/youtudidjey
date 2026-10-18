@@ -67,7 +67,7 @@ exploit o = do
   unless exists (die (xpSolution o <> " does not exist: run explore first"))
   violations <- lintSolution (xpSolution o)
   unless (null violations) (die ("refusing to run a solution.py that fails the lint:\n" <> T.unpack (T.unlines violations)))
-  (dir, code) <- runExploitation (ExploitConfig (xpSongs o) (xpMaxSongs o) (xpSolution o) (xpBlindly4 o))
+  (dir, code) <- runExploitation (ExploitConfig (xpSongs o) (xpMaxSongs o) (xpSolution o) (xpBlindly4 o) (xpMaxPlay o))
   putStrLn ("exploitation run: " <> dir)
   exitWith (if code == 0 then ExitSuccess else ExitFailure code)
 
