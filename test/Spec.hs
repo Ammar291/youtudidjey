@@ -4,10 +4,13 @@ import qualified ActionSpec
 import qualified BlindlySpec
 import qualified ExploreSpec
 import qualified GuardSpec
+import qualified LintSpec
 import qualified LlmSpec
 import qualified LogSpec
 import qualified MatchSpec
+import qualified MetricsSpec
 import qualified ObserverSpec
+import qualified SolutionEnvSpec
 import qualified SongsSpec
 import Test.Hspec
 import qualified TimeSpec
@@ -26,3 +29,6 @@ main = hspec $ do
   describe "Yuo.Llm" LlmSpec.spec
   describe "Yuo.Explore.Action" ActionSpec.spec
   describe "Yuo.Explore" ExploreSpec.spec
+  describe "Yuo.Codegen.Lint" LintSpec.spec
+  describe "Yuo.SolutionEnv" SolutionEnvSpec.spec
+  describe "Yuo.Metrics" MetricsSpec.spec

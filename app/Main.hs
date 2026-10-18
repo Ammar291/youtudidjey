@@ -5,22 +5,31 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Options.Applicative (execParser)
 import System.Exit (ExitCode (..), die, exitWith)
-import Control.Monad (when)
-import System.IO (hPutStrLn, hSetEncoding, stderr, stdout, utf8)
+import Control.Monad (unless, when)
+import System.Directory (doesFileExist, makeAbsolute)
+import System.FilePath ((</>))
+import System.IO (hSetEncoding, stderr, stdout, utf8)
 import Yuo.Blindly
 import Yuo.Cli
 import Yuo.Log
+import Yuo.Codegen (CodegenEnv (..), generateSolution)
+import Yuo.Codegen.Lint (lintSolution)
+import Yuo.Exploit (ExploitConfig (..), runExploitation)
+import Yuo.Report (writeReport)
 import Yuo.Explore
+import Yuo.Explore.Prompt (schemaDoc)
 import Yuo.Llm (backendFor)
 import Yuo.Songs (readSongs)
 import Yuo.Types
 
 main :: IO ()
-main =
+main = do
+  hSetEncoding stderr utf8
   execParser commandInfo >>= \case
     Proxy o -> proxy o >>= exitWith
     Explore o -> explore o
-    _ -> hPutStrLn stderr "not implemented" >> exitWith (ExitFailure 2)
+    Exploit o -> exploit o
+    Report o -> report o
 
 -- | @yuotudidjey b4 … -- ARGS@: guard, log and pass one blindly4 call through for solution.py.
 proxy :: B4Opts -> IO ExitCode
@@ -41,5 +50,28 @@ explore o = do
   songs <- readSongs (exSongs o)
   when (null songs) (die ("no songs in " <> exSongs o))
   let backend = backendFor (T.pack (exLlm o)) (T.pack (exModel o))
-  dir <- runExploration (ExploreConfig songs (exMaxSongs o) backend (exMaxPlay o) (exBlindly4 o))
+  dir <- maybe (runExploration (ExploreConfig songs (exMaxSongs o) backend (exMaxPlay o) (exBlindly4 o))) makeAbsolute (exFromRun o)
   putStrLn ("exploration run: " <> dir)
+  unless (exSkipCodegen o) $ withLogger dir $ \logger -> do
+    b <- newB4 (processBackend (exBlindly4 o)) Nothing logger Exploration
+    schema <- either (const "") schemaDoc <$> runRead b ODriver Schema
+    let writer = backendFor (T.pack (exLlm o)) (T.pack (exCodegenModel o))
+    generated <- generateSolution (CodegenEnv logger writer dir (exSongs o) (exBlindly4 o) "generated/solution.py" schema)
+    either (\e -> die ("solution.py was rejected after three repairs:\n" <> T.unpack e)) (\p -> putStrLn ("solution.py: " <> p)) generated
+
+-- | Exploitation stage: the generated solution.py alone, with no LLM reachable.
+exploit :: ExploitOpts -> IO ()
+exploit o = do
+  hSetEncoding stdout utf8
+  exists <- doesFileExist (xpSolution o)
+  unless exists (die (xpSolution o <> " does not exist: run explore first"))
+  violations <- lintSolution (xpSolution o)
+  unless (null violations) (die ("refusing to run a solution.py that fails the lint:\n" <> T.unpack (T.unlines violations)))
+  (dir, code) <- runExploitation (ExploitConfig (xpSongs o) (xpMaxSongs o) (xpSolution o) (xpBlindly4 o))
+  putStrLn ("exploitation run: " <> dir)
+  exitWith (if code == 0 then ExitSuccess else ExitFailure code)
+
+report :: ReportOpts -> IO ()
+report o = do
+  writeReport (rpExplore o) (rpExploit o) (rpOut o)
+  putStrLn ("report: " <> (rpOut o </> "report.md"))

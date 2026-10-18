@@ -4,6 +4,7 @@ version:            0.1.0.0
 synopsis:           YouTube DJ crawler driven only through blindly4: LLM exploration, generated exploitation
 license:            NONE
 build-type:         Simple
+extra-source-files: lint/fp_lint.py
 
 common shared
     default-language:   GHC2021
@@ -33,22 +34,30 @@ library
         Yuo.Blindly
         Yuo.Chrome
         Yuo.Cli
+        Yuo.Codegen
+        Yuo.Codegen.Contract
+        Yuo.Codegen.Lint
         Yuo.Concurrent
         Yuo.Explore
         Yuo.Explore.Action
         Yuo.Explore.Prompt
+        Yuo.Exploit
         Yuo.Guard
         Yuo.Llm
         Yuo.Log
         Yuo.Match
+        Yuo.Metrics
         Yuo.Observer
         Yuo.Pause
         Yuo.Process
+        Yuo.Report
+        Yuo.SolutionEnv
         Yuo.Songs
         Yuo.Time
         Yuo.Tree
         Yuo.Types
     build-depends:
+        file-embed,
         optparse-applicative
 
 executable yuotudidjey
@@ -68,10 +77,13 @@ test-suite spec
         BlindlySpec
         ExploreSpec
         GuardSpec
+        LintSpec
         LlmSpec
         LogSpec
         MatchSpec
+        MetricsSpec
         ObserverSpec
+        SolutionEnvSpec
         SongsSpec
         TimeSpec
         TreeSpec

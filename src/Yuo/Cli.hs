@@ -16,9 +16,11 @@ data ExploreOpts = ExploreOpts
   , exMaxSongs :: Int
   , exLlm :: String
   , exModel :: String
+  , exCodegenModel :: String
   , exMaxPlay :: Maybe Int
   , exSkipCodegen :: Bool
   , exBlindly4 :: FilePath
+  , exFromRun :: Maybe FilePath
   }
   deriving (Eq, Show)
 
@@ -68,10 +70,12 @@ exploreP =
     <$> songsOpt
     <*> option auto (long "max-songs" <> metavar "N" <> value 10 <> showDefault)
     <*> strOption (long "llm" <> metavar "claude|codex" <> value "claude" <> showDefault)
-    <*> strOption (long "model" <> metavar "MODEL" <> value "sonnet" <> showDefault)
+    <*> strOption (long "model" <> metavar "MODEL" <> value "sonnet" <> showDefault <> help "model for the per-step exploration")
+    <*> strOption (long "codegen-model" <> metavar "MODEL" <> value "opus" <> showDefault <> help "model that writes and repairs solution.py")
     <*> optional (option auto (long "max-play-seconds" <> metavar "S" <> help "development only: pause after S seconds"))
     <*> switch (long "skip-codegen" <> help "stop after the songs; do not generate solution.py")
     <*> blindly4Opt
+    <*> optional (strOption (long "from-run" <> metavar "DIR" <> help "skip the songs; generate solution.py from an existing exploration run"))
 
 exploitP :: Parser ExploitOpts
 exploitP =
