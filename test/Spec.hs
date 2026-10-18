@@ -10,6 +10,7 @@ import qualified LogSpec
 import qualified MatchSpec
 import qualified MetricsSpec
 import qualified ObserverSpec
+import qualified ProcessSpec
 import qualified SolutionEnvSpec
 import qualified SongsSpec
 import Test.Hspec
@@ -26,6 +27,7 @@ main = hspec $ do
   describe "Yuo.Blindly" BlindlySpec.spec
   describe "Yuo.Tree" TreeSpec.spec
   describe "Yuo.Observer" ObserverSpec.spec
+  describe "Yuo.Process" ProcessSpec.spec
   describe "Yuo.Llm" LlmSpec.spec
   describe "Yuo.Explore.Action" ActionSpec.spec
   describe "Yuo.Explore" ExploreSpec.spec

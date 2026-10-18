@@ -29,7 +29,7 @@ spec = do
   describe "askLoggedWith" $
     it "times out, retries twice, and logs every attempt" $
       withSystemTempDirectory "run" $ \dir -> do
-        let hung = LlmBackend "hung" (\_ _ -> forever (threadDelay 1000000))
+        let hung = LlmBackend "hung" (\_ _ _ -> forever (threadDelay 1000000))
         r <- withLogger dir $ \logger -> askLoggedWith (AskConfig 1 [0, 0]) logger hung PStep (object []) "prompt"
         r `shouldBe` Left "llm timeout"
         ls <- BC.lines <$> BC.readFile (dir </> "llm.jsonl")

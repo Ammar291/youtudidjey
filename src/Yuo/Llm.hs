@@ -27,7 +27,7 @@ import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Yuo.Log (Logger, encodeLine, logLlm)
-import Yuo.Process (runUtf8)
+import Yuo.Process (runUtf8Timed)
 import Yuo.Types (nowPosix)
 
 data Purpose = PStep | PPreparePause | PReflect | PCodegen | PRepair
@@ -41,8 +41,9 @@ purposeText = \case
   PCodegen -> "codegen"
   PRepair -> "repair"
 
--- | A schema and a prompt in, a JSON value (or an error) out.
-data LlmBackend = LlmBackend {llmName :: Text, llmAsk :: Value -> Text -> IO (Either Text Value)}
+-- | A time limit in seconds, a schema and a prompt in; a JSON value (or an error) out. Process
+-- backends must kill their child at the limit (an async timeout cannot interrupt a pipe read).
+data LlmBackend = LlmBackend {llmName :: Text, llmAsk :: Int -> Value -> Text -> IO (Either Text Value)}
 
 -- | npm installs only .cmd shims on Windows; resolve the real program behind them.
 npmModule :: FilePath -> IO (Maybe FilePath)
@@ -62,7 +63,7 @@ scratchDir = do
 
 -- | @claude -p@ with tools disabled and hooks off: it can only answer, never act.
 claudeBackend :: Text -> LlmBackend
-claudeBackend model = LlmBackend ("claude:" <> model) $ \schema prompt -> do
+claudeBackend model = LlmBackend ("claude:" <> model) $ \seconds schema prompt -> do
   exe <- findExecutable "claude" >>= maybe (npmModule ("@anthropic-ai" </> "claude-code" </> "bin" </> "claude.exe")) (pure . Just)
   case exe of
     Nothing -> pure (Left "claude CLI not found")
@@ -73,15 +74,16 @@ claudeBackend model = LlmBackend ("claude:" <> model) $ \schema prompt -> do
             , "--json-schema", T.unpack (encodeLine schema), "--no-session-persistence"
             , "--settings", "{\"disableAllHooks\":true}"
             ]
-      (code, out, err) <- runUtf8 path args (Just cwd) prompt
-      pure $ case eitherDecodeStrict' (TE.encodeUtf8 out) of
-        Right envelope -> extractClaude envelope
-        Left _ -> Left ("claude exited " <> T.pack (show code) <> ": " <> T.take 400 (if T.null (T.strip err) then out else err))
+      runUtf8Timed seconds path args (Just cwd) prompt >>= \case
+        Nothing -> pure (Left "llm timeout")
+        Just (code, out, err) -> pure $ case eitherDecodeStrict' (TE.encodeUtf8 out) of
+          Right envelope -> extractClaude envelope
+          Left _ -> Left ("claude exited " <> T.pack (show code) <> ": " <> T.take 400 (if T.null (T.strip err) then out else err))
 
 -- | @codex exec@ in a read-only sandbox. Best effort: codex keeps a shell, so its log tightness is
 -- weaker than claude's (see the design doc).
 codexBackend :: Maybe Text -> LlmBackend
-codexBackend model = LlmBackend ("codex" <> maybe "" (":" <>) model) $ \schema prompt -> do
+codexBackend model = LlmBackend ("codex" <> maybe "" (":" <>) model) $ \seconds schema prompt -> do
   script <- npmModule ("@openai" </> "codex" </> "bin" </> "codex.js")
   node <- findExecutable "node"
   case (node, script) of
@@ -95,11 +97,13 @@ codexBackend model = LlmBackend ("codex" <> maybe "" (":" <>) model) $ \schema p
             [s, "exec", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile]
               <> maybe [] (\m -> ["-m", T.unpack m]) model
               <> ["-"]
-      (code, _, err) <- runUtf8 n args (Just cwd) prompt
-      exists <- doesFileExist outFile
-      if not exists
-        then pure (Left ("codex exited " <> T.pack (show code) <> ": " <> T.take 400 err))
-        else either (Left . T.pack) Right . eitherDecodeStrict' . TE.encodeUtf8 <$> TU.readFile outFile
+      runUtf8Timed seconds n args (Just cwd) prompt >>= \case
+        Nothing -> pure (Left "llm timeout")
+        Just (code, _, err) -> do
+          exists <- doesFileExist outFile
+          if not exists
+            then pure (Left ("codex exited " <> T.pack (show code) <> ": " <> T.take 400 err))
+            else either (Left . T.pack) Right . eitherDecodeStrict' . TE.encodeUtf8 <$> TU.readFile outFile
     _ -> pure (Left "codex CLI not found")
 
 backendFor :: Text -> Text -> LlmBackend
@@ -142,7 +146,7 @@ askLoggedWith cfg logger backend purpose schema prompt = go (1 :: Int) (0 : acBa
       threadDelay (delay * 1000000)
       start <- nowPosix
       t0 <- getMonotonicTime
-      result <- maybe (Left "llm timeout") id <$> timeout (acTimeoutSec cfg * 1000000) (llmAsk backend schema prompt)
+      result <- maybe (Left "llm timeout") id <$> timeout (acTimeoutSec cfg * 1000000) (llmAsk backend (acTimeoutSec cfg) schema prompt)
       t1 <- getMonotonicTime
       logLlm logger $
         object

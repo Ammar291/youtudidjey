@@ -71,7 +71,7 @@ exploreP =
     <*> option auto (long "max-songs" <> metavar "N" <> value 10 <> showDefault)
     <*> strOption (long "llm" <> metavar "claude|codex" <> value "claude" <> showDefault)
     <*> strOption (long "model" <> metavar "MODEL" <> value "sonnet" <> showDefault <> help "model for the per-step exploration")
-    <*> strOption (long "codegen-model" <> metavar "MODEL" <> value "opus" <> showDefault <> help "model that writes and repairs solution.py")
+    <*> strOption (long "codegen-model" <> metavar "MODEL" <> value "sonnet" <> showDefault <> help "model that writes and repairs solution.py")
     <*> optional (option auto (long "max-play-seconds" <> metavar "S" <> help "development only: pause after S seconds"))
     <*> switch (long "skip-codegen" <> help "stop after the songs; do not generate solution.py")
     <*> blindly4Opt

@@ -37,7 +37,7 @@ scripted :: [Value] -> IO (LlmBackend, IORef [Text])
 scripted answers = do
   queue <- newIORef answers
   prompts <- newIORef []
-  let ask _ prompt = do
+  let ask _ _ prompt = do
         modifyIORef' prompts (<> [prompt])
         atomicModifyIORef' queue $ \case
           [a] -> ([a], Right a)
