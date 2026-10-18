@@ -69,7 +69,9 @@ withChrome b4 stage = bracket open close
       let b = withPid pid b4
           session = ChromeSession pid profile throwaway
       void (waitFor 40 (paneHasYouTube b))
-      warmUp 6 30 5000000 b >>= \case
+      -- Windows lets a background program take the foreground only once the user has been idle for
+      -- ForegroundLockTimeout (200 s by default), so wait that long for Chrome to come to the front.
+      warmUp 40 30 5000000 b >>= \case
         Left why -> close session >> throwIO (EnvironmentNotReady why)
         Right () -> threadDelay 2000000 -- let the single-page app settle before the first song
       pure session
@@ -84,21 +86,24 @@ withChrome b4 stage = bracket open close
 -- | Brings Chrome to the front and waits (up to @tries@ half-second polls) for the paused player.
 -- A background window exposes no page tree, so a failed activation is retried after @settleUs@
 -- (Windows refuses to switch the foreground while someone is using another window); a missing
--- player gets a reload (F5) and @settleUs@ to load. At most @retries@ retries.
+-- player gets a reload (F5) and @settleUs@ to load. At most @retries@ activation retries and two reloads.
 warmUp :: Int -> Int -> Int -> B4 -> IO (Either Text ())
-warmUp retries0 tries settleUs b = attempt retries0
+warmUp retries0 tries settleUs b = attempt retries0 (2 :: Int)
   where
-    attempt retries = do
+    attempt retries reloads = do
       activated <- isRight <$> withInput b (\tok -> runInput b ODriver tok Activate)
       ready <- if activated then waitFor tries (pauseIfPlaying b) else pure False
       case (activated, ready) of
         (True, True) -> pure (Right ())
-        _ | retries <= 0 -> pure (Left (if activated then "the YouTube player never appeared in the accessibility tree" else "Chrome could not be brought to the front"))
-        (True, False) -> do
-          void (withInput b (\tok -> runInput b ODriver tok (Key "f5" Nothing)))
-          threadDelay settleUs
-          attempt (retries - 1)
-        (False, _) -> threadDelay settleUs >> attempt (retries - 1)
+        (True, False)
+          | reloads > 0 -> do
+              void (withInput b (\tok -> runInput b ODriver tok (Key "f5" Nothing)))
+              threadDelay settleUs
+              attempt retries (reloads - 1)
+          | otherwise -> pure (Left "the YouTube player never appeared in the accessibility tree")
+        (False, _)
+          | retries > 0 -> threadDelay settleUs >> attempt (retries - 1) reloads
+          | otherwise -> pure (Left "Chrome could not be brought to the front (another window kept the foreground)")
 
 nodes :: B4 -> Command 'ReadOnly -> IO [Node]
 nodes b cmd = either (const []) id . (>>= either (Left . B4Unexpected 0) Right . parseMatches) <$> runRead b ODriver cmd

@@ -60,7 +60,7 @@ explore o = do
     schema <- either (const "") schemaDoc <$> runRead b ODriver Schema
     let writer = backendFor (T.pack (exLlm o)) (T.pack (exCodegenModel o))
     generated <- generateSolution (CodegenEnv logger writer dir (exSongs o) (exBlindly4 o) "generated/solution.py" schema (liveSmoke dir (exSongs o) (exBlindly4 o)))
-    either (\e -> die ("solution.py was rejected after three repairs:\n" <> T.unpack e)) (\p -> putStrLn ("solution.py: " <> p)) generated
+    either (\e -> die ("no solution.py was installed:\n" <> T.unpack e)) (\p -> putStrLn ("solution.py: " <> p)) generated
 
 -- | Exploitation stage: the generated solution.py alone, with no LLM reachable.
 exploit :: ExploitOpts -> IO ()
