@@ -1,0 +1,7 @@
+dist-newstyle/
+.chrome-profile/
+logs/
+tools/
+bin/
+generated/__pycache__/
+.superpowers/
