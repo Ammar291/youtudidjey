@@ -34,9 +34,11 @@ library
         Yuo.Cli
         Yuo.Concurrent
         Yuo.Guard
+        Yuo.Llm
         Yuo.Log
         Yuo.Match
         Yuo.Observer
+        Yuo.Process
         Yuo.Songs
         Yuo.Time
         Yuo.Tree
@@ -59,6 +61,7 @@ test-suite spec
     other-modules:
         BlindlySpec
         GuardSpec
+        LlmSpec
         LogSpec
         MatchSpec
         ObserverSpec

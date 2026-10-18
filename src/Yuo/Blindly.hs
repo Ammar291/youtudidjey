@@ -22,25 +22,18 @@ module Yuo.Blindly
   , errorText
   ) where
 
-import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.MVar
 import Control.Exception (Exception, throwIO)
 import Data.Aeson (Value (..), eitherDecodeStrict')
 import qualified Data.Aeson.KeyMap as KM
-import qualified Data.ByteString as BS
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Text.Encoding.Error (lenientDecode)
 import GHC.Clock (getMonotonicTime)
-import System.Directory (makeAbsolute)
-import System.Exit (ExitCode (..))
-import System.FilePath (normalise)
-import System.IO (hClose, hSetBinaryMode)
-import System.Process (CreateProcess (..), StdStream (..), proc, waitForProcess, withCreateProcess)
 import Yuo.Guard (allowedCall)
 import Yuo.Log
+import Yuo.Process (runUtf8)
 import Yuo.Types
 
 data Risk = ReadOnly | Mutating
@@ -117,19 +110,7 @@ newtype Backend = Backend {invoke :: [Text] -> IO (Int, Text, Text)}
 
 -- | Runs the real executable, reading its output as UTF-8 bytes (never the console code page).
 processBackend :: FilePath -> Backend
-processBackend exe = Backend $ \args -> do
-  -- CreateProcess does not resolve a relative path written with forward slashes.
-  absolute <- normalise <$> makeAbsolute exe
-  let spec = (proc absolute (map T.unpack args)) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
-  withCreateProcess spec $ \mIn mOut mErr ph -> case (mIn, mOut, mErr) of
-    (Just hin, Just hout, Just herr) -> do
-      hClose hin
-      mapM_ (`hSetBinaryMode` True) [hout, herr]
-      (out, err) <- concurrently (BS.hGetContents hout) (BS.hGetContents herr)
-      code <- waitForProcess ph
-      let exitInt = case code of ExitSuccess -> 0; ExitFailure n -> n
-      pure (exitInt, TE.decodeUtf8With lenientDecode out, TE.decodeUtf8With lenientDecode err)
-    _ -> pure (1, "", "could not start blindly4")
+processBackend exe = Backend $ \args -> runUtf8 exe (map T.unpack args) Nothing ""
 
 data B4 = B4
   { b4Backend :: Backend

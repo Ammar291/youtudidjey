@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified BlindlySpec
 import qualified GuardSpec
+import qualified LlmSpec
 import qualified LogSpec
 import qualified MatchSpec
 import qualified ObserverSpec
@@ -20,3 +21,4 @@ main = hspec $ do
   describe "Yuo.Blindly" BlindlySpec.spec
   describe "Yuo.Tree" TreeSpec.spec
   describe "Yuo.Observer" ObserverSpec.spec
+  describe "Yuo.Llm" LlmSpec.spec
