@@ -36,9 +36,9 @@ allowedCall [] = Left "empty blindly4 call"
 allowedCall (cmd : args)
   | cmd `elem` readOnlyOrHarmless = Right ()
   | cmd == "open" =
-      if maybe False ("https://www.youtube.com/" `T.isPrefixOf`) (opt "url")
+      if maybe False ("https://www.youtube.com/" `T.isPrefixOf`) (opt "url") && isJust (opt "chrome-profile")
         then Right ()
-        else Left "open is limited to https://www.youtube.com/"
+        else Left "open is limited to https://www.youtube.com/ in an isolated --chrome-profile"
   | cmd `elem` ["press", "set-value", "focus"] = labelled
   | cmd == "key" = key
   | cmd `elem` ["type", "click", "paste", "set-selected-text"] =
@@ -54,6 +54,6 @@ allowedCall (cmd : args)
         Nothing -> Right ()
     key = case T.toLower <$> opt "key" of
       Just k
-        | k `elem` ["escape", "esc"] || (T.length k == 1 && T.all isDigit k) -> Right ()
+        | k `elem` ["escape", "esc", "f5"] || (T.length k == 1 && T.all isDigit k) -> Right ()
         | k `elem` ["return", "enter"] && isJust (opt "target-path") && isJust (opt "require-value") -> Right ()
-      _ -> Left "key allows escape, a digit, or return/enter guarded by --target-path and --require-value"
+      _ -> Left "key allows escape, f5, a digit, or return/enter guarded by --target-path and --require-value"

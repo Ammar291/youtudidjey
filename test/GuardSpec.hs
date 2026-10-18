@@ -29,6 +29,10 @@ spec = describe "allowedCall" $ do
   it "allows escape and digit keys" $ do
     allowedCall ["key", "--key", "escape", "--pid", "7"] `shouldBe` Right ()
     allowedCall ["key", "--key", "0", "--pid", "7"] `shouldBe` Right ()
+  it "allows reloading the page with F5" $
+    allowedCall ["key", "--key", "f5", "--pid", "7"] `shouldBe` Right ()
+  it "never opens a URL in the personal default browser" $
+    allowedCall ["open", "--url", "https://www.youtube.com/"] `shouldSatisfy` isLeft
   it "refuses other keys" $
     allowedCall ["key", "--key", "ctrl+l", "--pid", "7"] `shouldSatisfy` isLeft
   it "opens only YouTube" $ do
