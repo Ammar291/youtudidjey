@@ -7,6 +7,8 @@ module Yuo.Codegen.Contract
 
 import Data.Text (Text)
 import qualified Data.Text as T
+import Yuo.Match (adMarkerTitles)
+import Yuo.Time (pauseCallLatency, resyncTolerance, startWindow)
 
 contractText :: Text
 contractText =
@@ -46,16 +48,28 @@ fpRulesText =
     , "- Immutable data only: @dataclass(frozen=True), NamedTuple, tuples, frozenset. No mutable globals."
     , "- Use lambdas (at least 5), map/filter, functools.reduce, functools.partial, itertools (cycle, islice, repeat, takewhile, dropwhile, count), and a compose/pipe helper."
     , "- Forbidden: while loops (iterate lazily: e.g. next(filter(ready, map(probe, itertools.repeat(None))))), global, nonlocal, augmented assignment (+= etc.), del, item or attribute assignment, mutating methods (append, extend, insert, pop, remove, clear, update, setdefault, popitem, add, discard, sort, reverse), classes other than frozen dataclasses / NamedTuple / Enum."
-    , "- Forbidden imports: anthropic, openai, requests, urllib, http, socket, httpx, aiohttp, ctypes, comtypes, pywinauto, uiautomation, win32*, selenium, playwright, webbrowser, asyncio, importlib, multiprocessing, ssl and other network modules; no __import__/eval/exec/compile; no os.system/os.popen/os.startfile/os.spawn*/os.exec*; no string mentioning claude, codex or blindly4.exe."
-    , "- Every subprocess call is a direct call (not via partial or an alias) whose command is exactly [*prefix, *args] with prefix = the YUO_B4 array used whole — never index or slice it."
+    , "- Forbidden imports: anthropic, openai, requests, urllib, http, socket, httpx, aiohttp, ctypes, _ctypes, cffi, comtypes, pywinauto, uiautomation, win32*, pythoncom, pywintypes, _winapi, nt, posix, pyautogui, pynput, keyboard, mouse, selenium, playwright, webbrowser, asyncio, importlib, multiprocessing, ssl and other network modules; no __import__/eval/exec/compile/globals/locals/vars, no dunder names or attributes (__dict__, __builtins__, ...) other than __name__, no sys.modules; no os.system/os.popen/os.startfile/os.spawn*/os.exec*; no string mentioning claude, codex or blindly4.exe."
+    , "- Every subprocess call is a direct call (not via partial or an alias) whose command is exactly [*prefix, *args], where prefix = json.loads(os.environ[\"YUO_B4\"]) is a name bound nowhere else (not a parameter, not a loop variable, not assigned anything else) and is used whole — never index or slice it. Use the subprocess and os modules only as subprocess.<name> / os.<name>, never as values."
     ]
 
--- | How exploration's own (non-LLM) driver timed the pause — part of the collected data.
+-- | How exploration's own (non-LLM) code recognised ads and timed the pause — part of the collected
+-- data. Built from the constants that code uses, so the two cannot drift apart.
 driverTimingText :: Text
 driverTimingText =
   T.unlines
-    [ "How the exploration stage's timer paused each song (its calls appear in the trace with origin \"driver\"):"
+    [ "How the exploration stage's own code decided that the song itself was playing and timed the pause (its calls appear in the trace with origin \"driver\" or \"observer\"):"
+    , "- Ads: an ad is running while the player (the element with identifier movie_player; search inside it with find --under <its path> --depth 5) contains an element titled exactly " <> orList (map quoted adMarkerTitles) <> ". Unskippable ads show a Pause (k) button and no Skip button, so a Pause (k) button alone does not mean the song is playing: it is playing when Pause (k) is shown and no ad marker is. Short bumper ads (about 5 s) show no marker at all, and after an ad YouTube can take several more seconds to load the song."
     , "- Right after playback was confirmed it hovered the pointer over the centre of the YouTube player (\"hover\" with the player element's frame centre) and then read the player's seek slider; the slider's value text (\"X Minutes Y Seconds of A Minutes B Seconds\") is only up to date right after such a hover — without it the text can be stale, even showing a finished ad."
-    , "- It computed start = now − position and deadline = start + duration − 3 s − 0.6 s (the pause call's own latency), slept until 15 s before the deadline, hovered and read again to re-sync, slept until the deadline, then pressed the pause control."
-    , "- Even right after a hover the text is sometimes stale, so a reading was believed only if its duration matched and the start it implied (now − position) was within 10 s of the start already known (the moment playback was first seen); otherwise the earlier estimate was kept. Hover by moving across the player (e.g. 40 px left of its centre, then the centre) and wait about 0.8 s before reading."
+    , "- It computed start = now − position and deadline = start + duration − 3 s − " <> secs pauseCallLatency <> " (the pause call's own latency), slept until 15 s before the deadline, hovered and read again to re-sync, slept until the deadline, then pressed the pause control."
+    , "- Even right after a hover the text is sometimes stale, so a reading was believed for the start only if it was song-length (duration at least 60 s and within 3 s of the video's length) and the start it implied (now − position) lay between " <> secs early <> " before and " <> secs late <> " after the moment the song was first seen playing with no ad marker. Until a reading was believed it kept taking readings, about every 2–5 s, up to 40 tries. Hover by moving across the player (e.g. 40 px left of its centre, then the centre) and wait about 0.8 s before reading."
+    , "- The re-sync reading 15 s before the deadline moved the pause only if its duration matched and the start it implied agreed with the start in use within " <> secs resyncTolerance <> "; otherwise the earlier estimate was kept."
     ]
+  where
+    (early, late) = startWindow
+    quoted t = "\"" <> t <> "\""
+    orList ws = case reverse ws of
+      w : rest@(_ : _) -> T.intercalate ", " (reverse rest) <> " or " <> w
+      _ -> T.concat ws
+    secs x
+      | x == fromIntegral (round x :: Int) = T.pack (show (round x :: Int)) <> " s"
+      | otherwise = T.pack (show x) <> " s"

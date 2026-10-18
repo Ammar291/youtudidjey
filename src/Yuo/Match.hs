@@ -7,6 +7,7 @@ module Yuo.Match
   , paneInfo
   , playState
   , isAdMarker
+  , adMarkerTitles
   ) where
 
 import Data.Char (GeneralCategory (NonSpacingMark), generalCategory, isAlphaNum)
@@ -54,6 +55,9 @@ playState label
   | label `elem` ["Play (k)", "Play keyboard shortcut k"] = Just PausedState
   | otherwise = Nothing
 
--- | Controls that only exist inside the player while an ad runs.
+-- | Exact titles of controls that only exist inside the player while an ad runs.
+adMarkerTitles :: [Text]
+adMarkerTitles = ["Sponsored", "My Ad Center", "Skip", "Skip Ad", "Skip Ads"]
+
 isAdMarker :: Text -> Bool
-isAdMarker = (`elem` ["Sponsored", "My Ad Center", "Skip", "Skip Ad", "Skip Ads"])
+isAdMarker = (`elem` adMarkerTitles)

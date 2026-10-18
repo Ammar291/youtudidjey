@@ -4,6 +4,7 @@ import qualified ActionSpec
 import qualified BlindlySpec
 import qualified ChromeSpec
 import qualified CodegenSpec
+import qualified ContractSpec
 import qualified ExploitSpec
 import qualified ExploreSpec
 import qualified GuardSpec
@@ -41,4 +42,5 @@ main = hspec $ do
   describe "Yuo.SolutionEnv" SolutionEnvSpec.spec
   describe "Yuo.Exploit" ExploitSpec.spec
   describe "Yuo.Codegen" CodegenSpec.spec
+  describe "Yuo.Codegen.Contract" ContractSpec.spec
   describe "Yuo.Metrics" MetricsSpec.spec

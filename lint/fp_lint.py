@@ -16,8 +16,11 @@ BANNED_MODULES = {"anthropic", "openai", "requests", "urllib", "urllib3", "http"
                   "ctypes", "comtypes", "pywinauto", "uiautomation", "win32api", "win32gui", "win32con",
                   "win32process", "selenium", "playwright", "webbrowser", "asyncio", "importlib",
                   "multiprocessing", "ssl", "ftplib", "smtplib", "poplib", "imaplib", "telnetlib", "xmlrpc",
-                  "socketserver", "pty", "runpy", "code", "concurrent.futures.process"}
-BANNED_BUILTINS = {"__import__", "eval", "exec", "compile", "breakpoint"}
+                  "socketserver", "pty", "runpy", "code", "concurrent.futures.process",
+                  "_winapi", "nt", "posix", "_posixsubprocess", "_ctypes", "cffi", "win32com", "pythoncom",
+                  "pywintypes", "win32ui", "pyautogui", "pynput", "keyboard", "mouse"}
+BANNED_BUILTINS = {"__import__", "eval", "exec", "compile", "breakpoint", "globals", "locals", "vars"}
+PLAIN_DUNDERS = {"__name__", "__file__", "__doc__"}
 BANNED_TEXT = ("claude", "codex", "blindly4.exe")
 SPAWNERS = {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
 OS_SPAWNERS = {"system", "popen", "startfile", "posix_spawn", "posix_spawnp"}
@@ -40,6 +43,33 @@ def frozen_dataclass(decorator):
 
 def mentions_yuo_b4(node):
     return any(isinstance(n, ast.Constant) and n.value == "YUO_B4" for n in ast.walk(node))
+
+
+def bindings(tree):
+    """Every (name, node) pair the module binds: assignment and loop targets, parameters, imports,
+    definitions, exception handlers and match patterns."""
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            yield n.id, n
+        elif isinstance(n, ast.arg):
+            yield n.arg, n
+        elif isinstance(n, ast.alias):
+            yield (n.asname or n.name).split(".")[0], n
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield n.name, n
+        elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and n.name:
+            yield n.name, n
+        elif isinstance(n, ast.MatchMapping) and n.rest:
+            yield n.rest, n
+
+
+def proxy_names(tree):
+    """Names bound from YUO_B4 (`name = ...os.environ["YUO_B4"]...`), split into all of them and the
+    trusted ones: those the module binds nowhere else (no parameter, loop target or other assignment)."""
+    from_b4 = {id(t): t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and mentions_yuo_b4(n.value)
+               for t in n.targets if isinstance(t, ast.Name)}
+    others = {name for name, node in bindings(tree) if id(node) not in from_b4}
+    return set(from_b4.values()), set(from_b4.values()) - others
 
 
 def aliases(tree):
@@ -94,10 +124,10 @@ def lint(source):
     def bad(node, rule):
         found.append({"line": getattr(node, "lineno", 0), "rule": rule})
 
-    b4_names = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and mentions_yuo_b4(n.value)
-                for t in n.targets if isinstance(t, ast.Name)}
+    from_b4, b4_names = proxy_names(tree)
     sub_names, os_names, fn_names = aliases(tree)
     called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    owners = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     lambdas = 0
     uses = set()
     for n in ast.walk(tree):
@@ -131,7 +161,7 @@ def lint(source):
             for word in BANNED_TEXT:
                 if word in lowered:
                     bad(n, f"string mentions {word}: no LLM CLIs and no direct blindly4 path")
-        elif isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id in b4_names:
+        elif isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id in from_b4:
             bad(n, "indexing or slicing the YUO_B4 prefix: use it whole, as [*prefix, *args]")
         elif isinstance(n, (ast.Name, ast.Attribute)) and is_spawner(n, sub_names, os_names, fn_names):
             if id(n) not in called:
@@ -144,8 +174,6 @@ def lint(source):
                 uses.add("map/filter")
             if callee == "reduce":
                 uses.add("reduce")
-            if isinstance(n.func, ast.Name) and n.func.id in BANNED_BUILTINS:
-                bad(n, f"{n.func.id}(): no dynamic imports or code execution")
             if is_spawner(n.func, sub_names, os_names, fn_names):
                 owner = n.func.value.id if isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) else None
                 if owner in os_names:
@@ -153,7 +181,22 @@ def lint(source):
                 else:
                     command = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "args"), None)
                     if command is None or not built_from_prefix(command, b4_names):
-                        bad(n, "subprocess call not built from YUO_B4: every UI action must go through blindly4")
+                        bad(n, "subprocess call not built from YUO_B4: every UI action must go through blindly4."
+                               " Write prefix = json.loads(os.environ[\"YUO_B4\"]) into a name the program binds"
+                               " nowhere else (not a parameter, not a loop variable) and call"
+                               " subprocess.run([*prefix, *args]) directly")
+        if isinstance(n, ast.Name):
+            if n.id in BANNED_BUILTINS:
+                bad(n, f"{n.id}: no dynamic imports, code execution or reflection")
+            elif n.id.startswith("__") and n.id.endswith("__") and n.id not in PLAIN_DUNDERS:
+                bad(n, f"{n.id}: no reflection on the interpreter")
+            elif n.id in sub_names | os_names and isinstance(n.ctx, ast.Load) and id(n) not in owners:
+                bad(n, f"module {n.id} used as a value: call its functions directly, e.g. subprocess.run([*prefix, *args])")
+        elif isinstance(n, ast.Attribute):
+            if n.attr.startswith("__") and n.attr.endswith("__"):
+                bad(n, f".{n.attr}: no reflection on objects or modules")
+            elif n.attr == "modules":
+                bad(n, "sys.modules: import modules normally")
     if lambdas < 5:
         found.append({"line": 0, "rule": f"only {lambdas} lambdas: use lambdas for small transformations (at least 5)"})
     for need, why in (("functools", "import functools"), ("itertools", "import itertools"),

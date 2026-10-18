@@ -53,9 +53,9 @@ sleepUntil deadline = do
     when moved (sleepUntil deadline)
 
 -- | Hovering usually refreshes the slider text, but not always: a stale reading must never move the
--- pause. The re-sync is believed only when the start it implies agrees with the start in use to 10 s.
+-- pause. The re-sync is believed only when the start it implies agrees with the start in use.
 agrees :: Double -> Double -> Bool
-agrees known implied = abs (implied - known) <= 10
+agrees known implied = abs (implied - known) <= resyncTolerance
 
 -- | A fresh reading after playback was seen: a song-length slider whose implied start is plausible
 -- (see 'plausibleStart') gives the exact start and duration. Ad-length sliders are never believed.
@@ -78,10 +78,6 @@ acceptResync start dur (t, Progress pos d)
   | otherwise = Nothing
   where
     implied = t - fromIntegral pos
-
--- | The latency of the pause call itself, subtracted from the deadline.
-pauseLatency :: Double
-pauseLatency = 0.6
 
 waitAndPause :: B4 -> Observer -> PlayInfo -> PausePlan -> Maybe Int -> IO PauseResult
 waitAndPause b obs info plan maxPlay = do
@@ -108,7 +104,7 @@ waitAndPause b obs info plan maxPlay = do
       pure (PauseResult t0 0 "no duration" False pressed)
     Just (start, dur, source) -> do
       let deadlineFrom s =
-            let full = pauseDeadline s dur 0 pauseLatency
+            let full = pauseDeadline s dur 0 pauseCallLatency
              in maybe full (\cap -> min full (s + fromIntegral cap)) maxPlay
       deadline <- newTVarIO (deadlineFrom start)
       resyncVar <- newTVarIO (deadlineFrom start - 15)

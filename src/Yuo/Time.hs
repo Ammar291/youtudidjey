@@ -6,6 +6,9 @@ module Yuo.Time
   , parseResultDuration
   , pauseDeadline
   , plausibleStart
+  , startWindow
+  , resyncTolerance
+  , pauseCallLatency
   ) where
 
 import Data.Char (isDigit)
@@ -66,7 +69,22 @@ parseResultDuration t = case trailing (reverse (T.words t)) of
 -- seconds loading the song after an ad ends, and unlabeled bumper ads can follow, with the audio
 -- indicator on throughout.
 plausibleStart :: Double -> Double -> Bool
-plausibleStart seen implied = implied >= seen - 10 && implied <= seen + 60
+plausibleStart seen implied = implied >= seen - before && implied <= seen + after
+  where
+    (before, after) = startWindow
+
+-- | Seconds before and after the moment playback was first seen that a song's start may fall.
+startWindow :: (Double, Double)
+startWindow = (10, 60)
+
+-- | A re-sync reading moves the pause only when its implied start agrees with the start in use to
+-- this many seconds: it corrects drift, nothing more.
+resyncTolerance :: Double
+resyncTolerance = 10
+
+-- | The latency of the pause call itself, subtracted from the deadline.
+pauseCallLatency :: Double
+pauseCallLatency = 0.6
 
 -- | When to press pause: 3 s before the end, minus the pause call's own latency, plus ad time.
 pauseDeadline :: Double -> Int -> Double -> Double -> Double
