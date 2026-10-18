@@ -1,6 +1,8 @@
 module Main (main) where
 
+import qualified ActionSpec
 import qualified BlindlySpec
+import qualified ExploreSpec
 import qualified GuardSpec
 import qualified LlmSpec
 import qualified LogSpec
@@ -22,3 +24,5 @@ main = hspec $ do
   describe "Yuo.Tree" TreeSpec.spec
   describe "Yuo.Observer" ObserverSpec.spec
   describe "Yuo.Llm" LlmSpec.spec
+  describe "Yuo.Explore.Action" ActionSpec.spec
+  describe "Yuo.Explore" ExploreSpec.spec

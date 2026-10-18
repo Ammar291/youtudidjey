@@ -5,16 +5,21 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Options.Applicative (execParser)
 import System.Exit (ExitCode (..), die, exitWith)
-import System.IO (hPutStrLn, stderr, stdout)
+import Control.Monad (when)
+import System.IO (hPutStrLn, hSetEncoding, stderr, stdout, utf8)
 import Yuo.Blindly
 import Yuo.Cli
 import Yuo.Log
+import Yuo.Explore
+import Yuo.Llm (backendFor)
+import Yuo.Songs (readSongs)
 import Yuo.Types
 
 main :: IO ()
 main =
   execParser commandInfo >>= \case
     Proxy o -> proxy o >>= exitWith
+    Explore o -> explore o
     _ -> hPutStrLn stderr "not implemented" >> exitWith (ExitFailure 2)
 
 -- | @yuotudidjey b4 … -- ARGS@: guard, log and pass one blindly4 call through for solution.py.
@@ -28,3 +33,13 @@ proxy o = do
   BS.hPut stdout (TE.encodeUtf8 out)
   BS.hPut stderr (TE.encodeUtf8 err)
   pure (if code == 0 then ExitSuccess else ExitFailure code)
+
+-- | Exploration stage: LLM-driven songs, then (Task 10) code generation.
+explore :: ExploreOpts -> IO ()
+explore o = do
+  hSetEncoding stdout utf8
+  songs <- readSongs (exSongs o)
+  when (null songs) (die ("no songs in " <> exSongs o))
+  let backend = backendFor (T.pack (exLlm o)) (T.pack (exModel o))
+  dir <- runExploration (ExploreConfig songs (exMaxSongs o) backend (exMaxPlay o) (exBlindly4 o))
+  putStrLn ("exploration run: " <> dir)

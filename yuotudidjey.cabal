@@ -23,6 +23,7 @@ common shared
         text,
         time,
         unicode-transforms,
+        vector,
         Win32
 
 library
@@ -33,11 +34,15 @@ library
         Yuo.Chrome
         Yuo.Cli
         Yuo.Concurrent
+        Yuo.Explore
+        Yuo.Explore.Action
+        Yuo.Explore.Prompt
         Yuo.Guard
         Yuo.Llm
         Yuo.Log
         Yuo.Match
         Yuo.Observer
+        Yuo.Pause
         Yuo.Process
         Yuo.Songs
         Yuo.Time
@@ -59,7 +64,9 @@ test-suite spec
     hs-source-dirs:   test
     main-is:          Spec.hs
     other-modules:
+        ActionSpec
         BlindlySpec
+        ExploreSpec
         GuardSpec
         LlmSpec
         LogSpec
