@@ -1,0 +1,1638 @@
+From 88237c720845c4253571435607411d3dc524a9bd Mon Sep 17 00:00:00 2001
+From: muham <mhammar029@gmail.com>
+Date: Sun, 18 Oct 2026 15:27:16 +0400
+Subject: [PATCH 1/2] windows: lazy find, --identifier, --under, hover,
+ ReadyToRun
+
+---
+ windows/Accessibility/Desktop.cs | 248 +++++++++++++++---------------
+ windows/Accessibility/Node.cs    | 251 ++++++++++++++++---------------
+ windows/Blindly4.csproj          |  25 +--
+ windows/CLI/Registry.cs          |  89 +++++------
+ windows/CLI/SelfTest.cs          | 239 +++++++++++++++--------------
+ windows/Input/Input.cs           | 217 +++++++++++++-------------
+ windows/Input/Native.cs          | 231 ++++++++++++++--------------
+ 7 files changed, 669 insertions(+), 631 deletions(-)
+
+diff --git a/windows/Accessibility/Desktop.cs b/windows/Accessibility/Desktop.cs
+index e41d6c9..64fe819 100644
+--- a/windows/Accessibility/Desktop.cs
++++ b/windows/Accessibility/Desktop.cs
+@@ -1,119 +1,129 @@
+-using System.Windows.Automation;
+-
+-namespace Blindly;
+-
+-internal sealed class Desktop
+-{
+-    readonly Node root;
+-    internal Desktop(int pid)
+-    {
+-        if (pid <= 0 || !Native.Windows().Any(w => w.Pid == pid)) throw CliError.Access($"No visible windows for PID {pid}");
+-        root = new Node(null, pid);
+-    }
+-    internal Node Resolve(string path)
+-    {
+-        var node = root;
+-        foreach (int index in Guards.Path(path))
+-            node = node.Children().Skip(index).FirstOrDefault() ?? throw CliError.Access($"Path {path} no longer exists; rediscover the target");
+-        return node;
+-    }
+-    internal IEnumerable<(Node Node, string Path)> Walk(int depth)
+-    {
+-        return Visit(root, "", depth);
+-        static IEnumerable<(Node, string)> Visit(Node n, string path, int remaining)
+-        {
+-            yield return (n, path);
+-            if (remaining == 0) yield break;
+-            int index = 0;
+-            foreach (var child in n.Children())
+-            {
+-                string next = path.Length == 0 ? $"{index}" : $"{path}.{index}";
+-                foreach (var row in Visit(child, next, remaining - 1)) yield return row;
+-                index++;
+-            }
+-        }
+-    }
+-    internal static void Tree(Invocation i)
+-    {
+-        var desktop = new Desktop(i.Pid);
+-        int remaining = i.Integer("max-nodes", 250, 1, 10000);
+-        int depth = i.Integer("depth", 4, 0, 64);
+-        bool truncated = false;
+-        Dictionary<string, object?> Build(Node n, int d)
+-        {
+-            remaining--;
+-            var row = n.Detail();
+-            var children = new List<object>();
+-            foreach (var child in n.Children())
+-            {
+-                if (remaining == 0 || d == 0) { truncated = true; break; }
+-                children.Add(Build(child, d - 1));
+-            }
+-            if (children.Count > 0) row["children"] = children;
+-            return row;
+-        }
+-        var tree = Build(desktop.root, depth);
+-        Program.Json(new { tree, truncated });
+-    }
+-    internal static void Show(Invocation i)
+-    {
+-        int count = 0;
+-        foreach (var (node, path) in new Desktop(i.Pid).Walk(i.Integer("depth", 4, 0, 64)))
+-        {
+-            if (++count > 10000) { Console.WriteLine("[truncated: 10000 nodes]"); break; }
+-            var row = node.Detail();
+-            Console.WriteLine($"{path,-18} {row["role"]} {row.GetValueOrDefault("title")} {row.GetValueOrDefault("value")}");
+-        }
+-    }
+-    internal static void Find(Invocation i)
+-    {
+-        string[] filters = ["title", "role", "value", "description"];
+-        if (!filters.Any(i.Has)) throw new CliError("find requires --title, --role, --value or --description");
+-        int limit = i.Integer("limit", 25, 1, 10000), visited = 0;
+-        var matches = new List<object>();
+-        bool truncated = false;
+-        foreach (var (node, path) in new Desktop(i.Pid).Walk(i.Integer("depth", 8, 0, 64)))
+-        {
+-            if (++visited > 10000) { truncated = true; break; }
+-            var row = node.Detail(path);
+-            if (filters.Where(i.Has).All(k => (row.GetValueOrDefault(k)?.ToString() ?? "").Contains(i.Value(k), StringComparison.OrdinalIgnoreCase))) matches.Add(row);
+-            if (matches.Count >= limit) { truncated = true; break; }
+-        }
+-        Program.Json(new { matches, truncated });
+-    }
+-    internal static void Focused(Invocation i)
+-    {
+-        var focused = AutomationElement.FocusedElement;
+-        if (focused == null || (i.Has("pid") && Native.ForegroundPid != i.Pid))
+-            throw new CliError("No focused control in the requested application", 77, "focus_unavailable");
+-        Program.Json(new Node(focused, i.Pid).Detail());
+-    }
+-    internal static void Mutate(Invocation i, string action, Action<Node> mutate)
+-    {
+-        var path = i.Value("path");
+-        var target = new Desktop(i.Pid).Resolve(path);
+-        mutate(target);
+-        Program.Json(new { path, action, ok = true });
+-    }
+-    internal static void Press(Invocation i)
+-    {
+-        i.Pair("require-value-path", "require-value");
+-        var desktop = new Desktop(i.Pid);
+-        var path = i.Value("path");
+-        var target = desktop.Resolve(path);
+-        if (i.Has("expect-description") && !(target.Detail()["description"]?.ToString() ?? "").Contains(i.Value("expect-description"), StringComparison.OrdinalIgnoreCase))
+-            throw new CliError("press target does not match --expect-description");
+-        if (i.Has("require-value-path") && !desktop.Resolve(i.Value("require-value-path")).ExactDraft(i.Value("require-value")))
+-            throw CliError.Access("Press blocked: the draft does not exactly match --require-value");
+-        target.Press();
+-        if (i.Has("require-selected"))
+-        {
+-            for (int attempt = 0; attempt < 20 && !target.Selected; attempt++) Thread.Sleep(50);
+-            if (!target.Selected) throw CliError.Access("Press completed but target was not selected; do not continue");
+-        }
+-        var result = new Dictionary<string, object?> { ["path"] = path, ["action"] = "AXPress", ["ok"] = true };
+-        if (i.Has("require-selected")) result["selected"] = true;
+-        if (i.Has("require-value-path")) result["verified"] = true;
+-        Program.Json(result);
+-    }
+-}
++using System.Windows.Automation;
++
++namespace Blindly;
++
++internal sealed class Desktop
++{
++    readonly Node root;
++    internal Desktop(int pid)
++    {
++        if (pid <= 0 || !Native.Windows().Any(w => w.Pid == pid)) throw CliError.Access($"No visible windows for PID {pid}");
++        root = new Node(null, pid);
++    }
++    internal Node Resolve(string path)
++    {
++        var node = root;
++        foreach (int index in Guards.Path(path))
++            node = node.Children().Skip(index).FirstOrDefault() ?? throw CliError.Access($"Path {path} no longer exists; rediscover the target");
++        return node;
++    }
++    internal IEnumerable<(Node Node, string Path)> Walk(int depth, string under = "")
++    {
++        return Visit(Resolve(under), under, depth);
++        static IEnumerable<(Node, string)> Visit(Node n, string path, int remaining)
++        {
++            yield return (n, path);
++            if (remaining == 0) yield break;
++            int index = 0;
++            foreach (var child in n.Children())
++            {
++                string next = path.Length == 0 ? $"{index}" : $"{path}.{index}";
++                foreach (var row in Visit(child, next, remaining - 1)) yield return row;
++                index++;
++            }
++        }
++    }
++    internal static void Tree(Invocation i)
++    {
++        var desktop = new Desktop(i.Pid);
++        int remaining = i.Integer("max-nodes", 250, 1, 10000);
++        int depth = i.Integer("depth", 4, 0, 64);
++        bool truncated = false;
++        Dictionary<string, object?> Build(Node n, int d)
++        {
++            remaining--;
++            var row = n.Detail();
++            var children = new List<object>();
++            foreach (var child in n.Children())
++            {
++                if (remaining == 0 || d == 0) { truncated = true; break; }
++                children.Add(Build(child, d - 1));
++            }
++            if (children.Count > 0) row["children"] = children;
++            return row;
++        }
++        var tree = Build(desktop.root, depth);
++        Program.Json(new { tree, truncated });
++    }
++    internal static void Show(Invocation i)
++    {
++        int count = 0;
++        foreach (var (node, path) in new Desktop(i.Pid).Walk(i.Integer("depth", 4, 0, 64)))
++        {
++            if (++count > 10000) { Console.WriteLine("[truncated: 10000 nodes]"); break; }
++            var row = node.Detail();
++            Console.WriteLine($"{path,-18} {row["role"]} {row.GetValueOrDefault("title")} {row.GetValueOrDefault("value")}");
++        }
++    }
++    // Cheapest UI Automation reads first. Each read is a cross-process call, so a node is
++    // rejected on its first failing filter and the full Detail is built only for matches.
++    internal static readonly (string Key, Func<Node, string?> Read)[] Filters = [
++        ("identifier", n => n.Identifier), ("role", n => n.Role), ("title", n => n.Title),
++        ("description", n => n.Description), ("value", n => n.Value)
++    ];
++    internal static bool Matches(string key, string? actual, string wanted) => key == "identifier"
++        ? string.Equals(actual ?? "", wanted, StringComparison.Ordinal)
++        : (actual ?? "").Contains(wanted, StringComparison.OrdinalIgnoreCase);
++    internal static void Find(Invocation i)
++    {
++        var active = Filters.Where(f => i.Has(f.Key)).ToArray();
++        if (active.Length == 0) throw new CliError("find requires --title, --role, --value, --description or --identifier");
++        int limit = i.Integer("limit", 25, 1, 10000), visited = 0;
++        var under = i.Optional("under") ?? "";
++        Guards.Path(under);
++        var matches = new List<object>();
++        bool truncated = false;
++        foreach (var (node, path) in new Desktop(i.Pid).Walk(i.Integer("depth", 8, 0, 64), under))
++        {
++            if (++visited > 10000) { truncated = true; break; }
++            if (active.All(f => Matches(f.Key, f.Read(node), i.Value(f.Key)))) matches.Add(node.Detail(path));
++            if (matches.Count >= limit) { truncated = true; break; }
++        }
++        Program.Json(new { matches, truncated });
++    }
++    internal static void Focused(Invocation i)
++    {
++        var focused = AutomationElement.FocusedElement;
++        if (focused == null || (i.Has("pid") && Native.ForegroundPid != i.Pid))
++            throw new CliError("No focused control in the requested application", 77, "focus_unavailable");
++        Program.Json(new Node(focused, i.Pid).Detail());
++    }
++    internal static void Mutate(Invocation i, string action, Action<Node> mutate)
++    {
++        var path = i.Value("path");
++        var target = new Desktop(i.Pid).Resolve(path);
++        mutate(target);
++        Program.Json(new { path, action, ok = true });
++    }
++    internal static void Press(Invocation i)
++    {
++        i.Pair("require-value-path", "require-value");
++        var desktop = new Desktop(i.Pid);
++        var path = i.Value("path");
++        var target = desktop.Resolve(path);
++        if (i.Has("expect-description") && !(target.Detail()["description"]?.ToString() ?? "").Contains(i.Value("expect-description"), StringComparison.OrdinalIgnoreCase))
++            throw new CliError("press target does not match --expect-description");
++        if (i.Has("require-value-path") && !desktop.Resolve(i.Value("require-value-path")).ExactDraft(i.Value("require-value")))
++            throw CliError.Access("Press blocked: the draft does not exactly match --require-value");
++        target.Press();
++        if (i.Has("require-selected"))
++        {
++            for (int attempt = 0; attempt < 20 && !target.Selected; attempt++) Thread.Sleep(50);
++            if (!target.Selected) throw CliError.Access("Press completed but target was not selected; do not continue");
++        }
++        var result = new Dictionary<string, object?> { ["path"] = path, ["action"] = "AXPress", ["ok"] = true };
++        if (i.Has("require-selected")) result["selected"] = true;
++        if (i.Has("require-value-path")) result["verified"] = true;
++        Program.Json(result);
++    }
++}
+diff --git a/windows/Accessibility/Node.cs b/windows/Accessibility/Node.cs
+index 3e83f1a..ca44c31 100644
+--- a/windows/Accessibility/Node.cs
++++ b/windows/Accessibility/Node.cs
+@@ -1,124 +1,127 @@
+-using System.Windows.Automation;
+-
+-namespace Blindly;
+-
+-internal sealed class Node(AutomationElement? element, int pid)
+-{
+-    internal AutomationElement? Element { get; } = element;
+-    internal int Pid { get; } = pid;
+-    internal bool Root => Element == null;
+-    internal T? Pattern<T>(AutomationPattern pattern) where T : class => Element != null && Element.TryGetCurrentPattern(pattern, out object result) ? result as T : null;
+-    internal string Role
+-    {
+-        get
+-        {
+-            if (Root) return "AXApplication";
+-            var type = Element!.Current.ControlType;
+-            if (type == ControlType.Edit) return Element.Current.IsPassword ? "AXSecureTextField" : "AXTextField";
+-            if (type == ControlType.Document) return "AXTextArea";
+-            return type.ProgrammaticName.Split('.').Last() switch {
+-                "Window" => "AXWindow", "Button" => "AXButton", "Text" => "AXStaticText", "Hyperlink" => "AXLink",
+-                "CheckBox" => "AXCheckBox", "RadioButton" => "AXRadioButton", "ComboBox" => "AXComboBox",
+-                "Tab" => "AXTabGroup", "TabItem" => "AXRadioButton", "List" => "AXList", "ListItem" => "AXRow",
+-                "Tree" => "AXOutline", "TreeItem" => "AXRow", "Menu" => "AXMenu", "MenuBar" => "AXMenuBar",
+-                "MenuItem" => "AXMenuItem", "ScrollBar" => "AXScrollBar", "Slider" => "AXSlider", "Image" => "AXImage",
+-                "Table" or "DataGrid" => "AXTable", "ProgressBar" => "AXProgressIndicator", _ => "AXGroup"
+-            };
+-        }
+-    }
+-    internal string? Value
+-    {
+-        get
+-        {
+-            if (Root || Element!.Current.IsPassword) return null;
+-            var value = Pattern<ValuePattern>(ValuePattern.Pattern);
+-            if (value != null) return value.Current.Value;
+-            var text = Pattern<TextPattern>(TextPattern.Pattern);
+-            return text?.DocumentRange.GetText(65536);
+-        }
+-    }
+-    internal bool Writable => !Root && !Element!.Current.IsPassword && Element.Current.IsEnabled &&
+-        new[] { "AXTextField", "AXTextArea", "AXComboBox" }.Contains(Role) &&
+-        Pattern<ValuePattern>(ValuePattern.Pattern) is { Current.IsReadOnly: false };
+-    internal bool HasFocus => Element != null && Element.Current.HasKeyboardFocus && Automation.Compare(Element, AutomationElement.FocusedElement);
+-    internal bool ExactDraft(string expected) => !Root && Value is string value && Guards.Exact(value, expected);
+-    internal bool Selected => Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern)?.Current.IsSelected == true;
+-    internal string[] Actions()
+-    {
+-        var actions = new List<string>();
+-        if (Pattern<InvokePattern>(InvokePattern.Pattern) != null || Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern) != null || Pattern<TogglePattern>(TogglePattern.Pattern) != null) actions.Add("AXPress");
+-        if (Pattern<ExpandCollapsePattern>(ExpandCollapsePattern.Pattern) != null) actions.Add("AXShowMenu");
+-        if (Pattern<ScrollItemPattern>(ScrollItemPattern.Pattern) != null) actions.Add("AXScrollToVisible");
+-        return actions.ToArray();
+-    }
+-    internal Dictionary<string, object?> Detail(string? path = null)
+-    {
+-        var row = new Dictionary<string, object?> { ["pid"] = Pid, ["role"] = Role };
+-        if (path != null) row["path"] = path;
+-        if (Root) { row["title"] = Native.ProcessName(Pid); return row; }
+-        var current = Element!.Current;
+-        row["title"] = current.Name;
+-        row["description"] = string.IsNullOrEmpty(current.HelpText) ? current.Name : current.HelpText;
+-        row["identifier"] = current.AutomationId;
+-        row["subrole"] = current.ControlType.ProgrammaticName;
+-        row["value"] = Value;
+-        row["enabled"] = current.IsEnabled;
+-        row["focused"] = current.HasKeyboardFocus;
+-        row["selected"] = Selected;
+-        row["actions"] = Actions();
+-        row["attributes"] = new[] { "AXRole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFocused", "AXSelected", "AXPosition", "AXSize" };
+-        var bounds = current.BoundingRectangle;
+-        if (!bounds.IsEmpty && double.IsFinite(bounds.X) && double.IsFinite(bounds.Y))
+-        {
+-            row["position"] = new { x = bounds.X, y = bounds.Y };
+-            row["size"] = new { width = bounds.Width, height = bounds.Height };
+-        }
+-        return row;
+-    }
+-    internal IEnumerable<Node> Children()
+-    {
+-        if (Root)
+-        {
+-            foreach (var window in Native.Windows().Where(w => w.Pid == Pid)) yield return new Node(AutomationElement.FromHandle(window.Handle), Pid);
+-            yield break;
+-        }
+-        var walker = TreeWalker.ControlViewWalker;
+-        var child = walker.GetFirstChild(Element);
+-        int count = 0;
+-        while (child != null)
+-        {
+-            if (++count > 10000) throw CliError.Access("Control has more than 10000 children; narrow the target");
+-            yield return new Node(child, Pid);
+-            child = walker.GetNextSibling(child);
+-        }
+-    }
+-    internal void Focus()
+-    {
+-        if (Root) throw new CliError("Choose a control path");
+-        Native.Activate(Pid);
+-        Element!.SetFocus();
+-        if (!HasFocus) throw CliError.Access("The target did not receive keyboard focus");
+-    }
+-    internal void SetValue(string text)
+-    {
+-        if (!Writable) throw new CliError("Target is not a writable UI Automation text control");
+-        Pattern<ValuePattern>(ValuePattern.Pattern)!.SetValue(text);
+-    }
+-    internal void Press()
+-    {
+-        if (Pattern<InvokePattern>(InvokePattern.Pattern) is { } invoke) invoke.Invoke();
+-        else if (Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern) is { } select) select.Select();
+-        else if (Pattern<TogglePattern>(TogglePattern.Pattern) is { } toggle) toggle.Toggle();
+-        else throw new CliError("Target does not support AXPress");
+-    }
+-    internal void Expand()
+-    {
+-        if (Pattern<ExpandCollapsePattern>(ExpandCollapsePattern.Pattern) is not { } expand) throw new CliError("Target does not support AXShowMenu");
+-        expand.Expand();
+-    }
+-    internal void ScrollTo()
+-    {
+-        if (Pattern<ScrollItemPattern>(ScrollItemPattern.Pattern) is not { } scroll) throw new CliError("Target does not support AXScrollToVisible");
+-        scroll.ScrollIntoView();
+-    }
+-}
++using System.Windows.Automation;
++
++namespace Blindly;
++
++internal sealed class Node(AutomationElement? element, int pid)
++{
++    internal AutomationElement? Element { get; } = element;
++    internal int Pid { get; } = pid;
++    internal bool Root => Element == null;
++    internal T? Pattern<T>(AutomationPattern pattern) where T : class => Element != null && Element.TryGetCurrentPattern(pattern, out object result) ? result as T : null;
++    internal string Role
++    {
++        get
++        {
++            if (Root) return "AXApplication";
++            var type = Element!.Current.ControlType;
++            if (type == ControlType.Edit) return Element.Current.IsPassword ? "AXSecureTextField" : "AXTextField";
++            if (type == ControlType.Document) return "AXTextArea";
++            return type.ProgrammaticName.Split('.').Last() switch {
++                "Window" => "AXWindow", "Button" => "AXButton", "Text" => "AXStaticText", "Hyperlink" => "AXLink",
++                "CheckBox" => "AXCheckBox", "RadioButton" => "AXRadioButton", "ComboBox" => "AXComboBox",
++                "Tab" => "AXTabGroup", "TabItem" => "AXRadioButton", "List" => "AXList", "ListItem" => "AXRow",
++                "Tree" => "AXOutline", "TreeItem" => "AXRow", "Menu" => "AXMenu", "MenuBar" => "AXMenuBar",
++                "MenuItem" => "AXMenuItem", "ScrollBar" => "AXScrollBar", "Slider" => "AXSlider", "Image" => "AXImage",
++                "Table" or "DataGrid" => "AXTable", "ProgressBar" => "AXProgressIndicator", _ => "AXGroup"
++            };
++        }
++    }
++    internal string? Value
++    {
++        get
++        {
++            if (Root || Element!.Current.IsPassword) return null;
++            var value = Pattern<ValuePattern>(ValuePattern.Pattern);
++            if (value != null) return value.Current.Value;
++            var text = Pattern<TextPattern>(TextPattern.Pattern);
++            return text?.DocumentRange.GetText(65536);
++        }
++    }
++    internal string? Title => Root ? Native.ProcessName(Pid) : Element!.Current.Name;
++    internal string? Description => Root ? null : string.IsNullOrEmpty(Element!.Current.HelpText) ? Element.Current.Name : Element.Current.HelpText;
++    internal string? Identifier => Root ? null : Element!.Current.AutomationId;
++    internal bool Writable => !Root && !Element!.Current.IsPassword && Element.Current.IsEnabled &&
++        new[] { "AXTextField", "AXTextArea", "AXComboBox" }.Contains(Role) &&
++        Pattern<ValuePattern>(ValuePattern.Pattern) is { Current.IsReadOnly: false };
++    internal bool HasFocus => Element != null && Element.Current.HasKeyboardFocus && Automation.Compare(Element, AutomationElement.FocusedElement);
++    internal bool ExactDraft(string expected) => !Root && Value is string value && Guards.Exact(value, expected);
++    internal bool Selected => Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern)?.Current.IsSelected == true;
++    internal string[] Actions()
++    {
++        var actions = new List<string>();
++        if (Pattern<InvokePattern>(InvokePattern.Pattern) != null || Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern) != null || Pattern<TogglePattern>(TogglePattern.Pattern) != null) actions.Add("AXPress");
++        if (Pattern<ExpandCollapsePattern>(ExpandCollapsePattern.Pattern) != null) actions.Add("AXShowMenu");
++        if (Pattern<ScrollItemPattern>(ScrollItemPattern.Pattern) != null) actions.Add("AXScrollToVisible");
++        return actions.ToArray();
++    }
++    internal Dictionary<string, object?> Detail(string? path = null)
++    {
++        var row = new Dictionary<string, object?> { ["pid"] = Pid, ["role"] = Role };
++        if (path != null) row["path"] = path;
++        if (Root) { row["title"] = Native.ProcessName(Pid); return row; }
++        var current = Element!.Current;
++        row["title"] = Title;
++        row["description"] = Description;
++        row["identifier"] = Identifier;
++        row["subrole"] = current.ControlType.ProgrammaticName;
++        row["value"] = Value;
++        row["enabled"] = current.IsEnabled;
++        row["focused"] = current.HasKeyboardFocus;
++        row["selected"] = Selected;
++        row["actions"] = Actions();
++        row["attributes"] = new[] { "AXRole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFocused", "AXSelected", "AXPosition", "AXSize" };
++        var bounds = current.BoundingRectangle;
++        if (!bounds.IsEmpty && double.IsFinite(bounds.X) && double.IsFinite(bounds.Y))
++        {
++            row["position"] = new { x = bounds.X, y = bounds.Y };
++            row["size"] = new { width = bounds.Width, height = bounds.Height };
++        }
++        return row;
++    }
++    internal IEnumerable<Node> Children()
++    {
++        if (Root)
++        {
++            foreach (var window in Native.Windows().Where(w => w.Pid == Pid)) yield return new Node(AutomationElement.FromHandle(window.Handle), Pid);
++            yield break;
++        }
++        var walker = TreeWalker.ControlViewWalker;
++        var child = walker.GetFirstChild(Element);
++        int count = 0;
++        while (child != null)
++        {
++            if (++count > 10000) throw CliError.Access("Control has more than 10000 children; narrow the target");
++            yield return new Node(child, Pid);
++            child = walker.GetNextSibling(child);
++        }
++    }
++    internal void Focus()
++    {
++        if (Root) throw new CliError("Choose a control path");
++        Native.Activate(Pid);
++        Element!.SetFocus();
++        if (!HasFocus) throw CliError.Access("The target did not receive keyboard focus");
++    }
++    internal void SetValue(string text)
++    {
++        if (!Writable) throw new CliError("Target is not a writable UI Automation text control");
++        Pattern<ValuePattern>(ValuePattern.Pattern)!.SetValue(text);
++    }
++    internal void Press()
++    {
++        if (Pattern<InvokePattern>(InvokePattern.Pattern) is { } invoke) invoke.Invoke();
++        else if (Pattern<SelectionItemPattern>(SelectionItemPattern.Pattern) is { } select) select.Select();
++        else if (Pattern<TogglePattern>(TogglePattern.Pattern) is { } toggle) toggle.Toggle();
++        else throw new CliError("Target does not support AXPress");
++    }
++    internal void Expand()
++    {
++        if (Pattern<ExpandCollapsePattern>(ExpandCollapsePattern.Pattern) is not { } expand) throw new CliError("Target does not support AXShowMenu");
++        expand.Expand();
++    }
++    internal void ScrollTo()
++    {
++        if (Pattern<ScrollItemPattern>(ScrollItemPattern.Pattern) is not { } scroll) throw new CliError("Target does not support AXScrollToVisible");
++        scroll.ScrollIntoView();
++    }
++}
+diff --git a/windows/Blindly4.csproj b/windows/Blindly4.csproj
+index 230d335..4d1911c 100644
+--- a/windows/Blindly4.csproj
++++ b/windows/Blindly4.csproj
+@@ -1,12 +1,13 @@
+-<Project Sdk="Microsoft.NET.Sdk">
+-  <PropertyGroup>
+-    <OutputType>Exe</OutputType>
+-    <TargetFramework>net10.0-windows</TargetFramework>
+-    <UseWPF>true</UseWPF>
+-    <UseWindowsForms>true</UseWindowsForms>
+-    <ImplicitUsings>enable</ImplicitUsings>
+-    <Nullable>enable</Nullable>
+-    <AssemblyName>blindly4</AssemblyName>
+-    <ApplicationManifest>app.manifest</ApplicationManifest>
+-  </PropertyGroup>
+-</Project>
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType>
++    <TargetFramework>net10.0-windows</TargetFramework>
++    <UseWPF>true</UseWPF>
++    <UseWindowsForms>true</UseWindowsForms>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <Nullable>enable</Nullable>
++    <AssemblyName>blindly4</AssemblyName>
++    <ApplicationManifest>app.manifest</ApplicationManifest>
++    <PublishReadyToRun>true</PublishReadyToRun>
++  </PropertyGroup>
++</Project>
+diff --git a/windows/CLI/Registry.cs b/windows/CLI/Registry.cs
+index 551f58d..4e4a0f9 100644
+--- a/windows/CLI/Registry.cs
++++ b/windows/CLI/Registry.cs
+@@ -1,44 +1,45 @@
+-using System.Text.RegularExpressions;
+-
+-namespace Blindly;
+-
+-internal sealed record Command(string Name, string Arguments, string Summary, string Risk, bool Accessibility, Action<Invocation> Execute)
+-{
+-    internal string[] Options => Regex.Matches(Arguments, @"--([a-z-]+)").Select(m => m.Groups[1].Value).Distinct().Order().ToArray();
+-    internal object Metadata => new { name = Name, usage = $"blindly4 {Name} {Arguments}".Trim(), summary = Summary, risk = Risk, requiresAccessibility = Accessibility, options = Options };
+-}
+-
+-internal static class Registry
+-{
+-    const string PathArgs = "--path INDEX[.INDEX...] [--pid PID]";
+-    static Command Read(string name, string args, string summary, Action<Invocation> action) => new(name, args, summary, "read-only", true, action);
+-    static Command Mutate(string name, string args, string summary, Action<Invocation> action, string risk = "ui-mutation") => new(name, args, summary, risk, true, action);
+-    internal static readonly Command[] All = [
+-        new("schema", "", "Print command metadata. Windows UIA retains AX role/action names for compatibility.", "read-only", false,
+-            _ => Program.Json(new { schemaVersion = 2, platform = "windows", backend = "UIAutomation", commands = All!.Select(c => c.Metadata) })),
+-        new("request-permission", "", "Windows UI Automation needs no macOS permission. Elevated and secure desktops remain inaccessible.", "ui-mutation", false,
+-            _ => Program.Json(new { trusted = true, platform = "windows", note = "Available on the current interactive desktop at the same integrity level. Does not elevate or change permissions." })),
+-        new("apps", "", "List visible GUI applications and PIDs.", "read-only", false, _ => Program.Json(new { apps = Native.Apps() })),
+-        Mutate("activate", "--pid PID", "Bring an application to the foreground and verify it.", i => { int pid = i.Integer("pid", 0, 1); if (pid == 0) throw new CliError("Missing --pid"); Native.Activate(pid); Program.Json(new { pid, ok = true }); }),
+-        Mutate("open", "--url URL", "Open an HTTP, HTTPS or Slack URL.", i => { var url = i.Value("url"); Guards.Url(url); System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); Program.Json(new { url, ok = true }); }),
+-        Read("tree", "[--pid PID] [--depth N] [--max-nodes N]", "Read a bounded live accessibility tree.", Desktop.Tree),
+-        Read("show", "[--pid PID] [--depth N]", "Print a readable live outline with paths.", Desktop.Show),
+-        Read("find", "[--title TEXT] [--role ROLE] [--value TEXT] [--description TEXT] [--pid PID] [--depth N] [--limit N]", "Search current accessible properties.", Desktop.Find),
+-        Read("focused", "[--pid PID]", "Read the focused control without changing focus.", Desktop.Focused),
+-        Read("inspect", PathArgs, "Inspect one live element.", i => Program.Json(new Desktop(i.Pid).Resolve(i.Value("path")).Detail())),
+-        Read("actions", PathArgs, "List supported actions.", i => Program.Json(new { path = i.Value("path"), actions = new Desktop(i.Pid).Resolve(i.Value("path")).Actions() })),
+-        Mutate("focus", PathArgs, "Focus an element.", i => Desktop.Mutate(i, "AXFocused", n => n.Focus())),
+-        Mutate("show-menu", PathArgs, "Expand an accessible menu control when supported.", i => Desktop.Mutate(i, "AXShowMenu", n => n.Expand())),
+-        Mutate("scroll-to", PathArgs, "Scroll an accessible item into view.", i => Desktop.Mutate(i, "AXScrollToVisible", n => n.ScrollTo())),
+-        Mutate("press", PathArgs + " [--expect-description TEXT] [--require-selected] [--require-value-path PATH --require-value TEXT]", "Invoke or select a control; may submit external data.", Desktop.Press, "external-commit"),
+-        Mutate("set-value", PathArgs + " --value TEXT", "Set a writable ValuePattern.", i => Desktop.Mutate(i, "AXValue", n => n.SetValue(i.Value("value")))),
+-        Mutate("set-selected-text", PathArgs + " --value TEXT", "Replace selected text in a focused writable control.", Input.SelectedText),
+-        Mutate("click", "--x X --y Y [--pid PID]", "Click a screen coordinate in the verified target application.", Input.Click),
+-        Mutate("type", "--text TEXT [--pid PID]", "Inject Unicode text into the foreground application.", Input.Type),
+-        Mutate("paste", "--text TEXT [--pid PID] [--target-path PATH]", "Paste, optionally verifying an exact writable target draft.", Input.Paste),
+-        Mutate("scroll", "--direction up|down|left|right [--amount LINES] [--pid PID]", "Inject bounded wheel input into the foreground application.", Input.Scroll),
+-        Mutate("key", "--key KEY [--pid PID] [--target-path PATH --require-value TEXT]", "Inject a key; a guarded key requires exact focused draft and PID.", Input.Key, "external-commit")
+-    ];
+-    internal static Command Get(string name) => All.FirstOrDefault(c => c.Name == name) ?? throw new CliError($"Unknown command: {name}");
+-    internal static string Help() => "Blindly4 for Windows — native UI Automation, stateless CLI\n" + string.Join("\n", All.Select(c => $"  {c.Name} {c.Arguments}\n    {c.Summary} [{c.Risk}]")) + "\nGlobal: --profile, --self-test. Paths are live: rediscover before input. Serialize desktop workflows.";
+-}
++using System.Text.RegularExpressions;
++
++namespace Blindly;
++
++internal sealed record Command(string Name, string Arguments, string Summary, string Risk, bool Accessibility, Action<Invocation> Execute)
++{
++    internal string[] Options => Regex.Matches(Arguments, @"--([a-z-]+)").Select(m => m.Groups[1].Value).Distinct().Order().ToArray();
++    internal object Metadata => new { name = Name, usage = $"blindly4 {Name} {Arguments}".Trim(), summary = Summary, risk = Risk, requiresAccessibility = Accessibility, options = Options };
++}
++
++internal static class Registry
++{
++    const string PathArgs = "--path INDEX[.INDEX...] [--pid PID]";
++    static Command Read(string name, string args, string summary, Action<Invocation> action) => new(name, args, summary, "read-only", true, action);
++    static Command Mutate(string name, string args, string summary, Action<Invocation> action, string risk = "ui-mutation") => new(name, args, summary, risk, true, action);
++    internal static readonly Command[] All = [
++        new("schema", "", "Print command metadata. Windows UIA retains AX role/action names for compatibility.", "read-only", false,
++            _ => Program.Json(new { schemaVersion = 2, platform = "windows", backend = "UIAutomation", commands = All!.Select(c => c.Metadata) })),
++        new("request-permission", "", "Windows UI Automation needs no macOS permission. Elevated and secure desktops remain inaccessible.", "ui-mutation", false,
++            _ => Program.Json(new { trusted = true, platform = "windows", note = "Available on the current interactive desktop at the same integrity level. Does not elevate or change permissions." })),
++        new("apps", "", "List visible GUI applications and PIDs.", "read-only", false, _ => Program.Json(new { apps = Native.Apps() })),
++        Mutate("activate", "--pid PID", "Bring an application to the foreground and verify it.", i => { int pid = i.Integer("pid", 0, 1); if (pid == 0) throw new CliError("Missing --pid"); Native.Activate(pid); Program.Json(new { pid, ok = true }); }),
++        Mutate("open", "--url URL", "Open an HTTP, HTTPS or Slack URL.", i => { var url = i.Value("url"); Guards.Url(url); System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); Program.Json(new { url, ok = true }); }),
++        Read("tree", "[--pid PID] [--depth N] [--max-nodes N]", "Read a bounded live accessibility tree.", Desktop.Tree),
++        Read("show", "[--pid PID] [--depth N]", "Print a readable live outline with paths.", Desktop.Show),
++        Read("find", "[--title TEXT] [--role ROLE] [--value TEXT] [--description TEXT] [--identifier ID] [--under PATH] [--pid PID] [--depth N] [--limit N]", "Search current accessible properties; --identifier is exact, --under limits the search to one subtree.", Desktop.Find),
++        Read("focused", "[--pid PID]", "Read the focused control without changing focus.", Desktop.Focused),
++        Read("inspect", PathArgs, "Inspect one live element.", i => Program.Json(new Desktop(i.Pid).Resolve(i.Value("path")).Detail())),
++        Read("actions", PathArgs, "List supported actions.", i => Program.Json(new { path = i.Value("path"), actions = new Desktop(i.Pid).Resolve(i.Value("path")).Actions() })),
++        Mutate("focus", PathArgs, "Focus an element.", i => Desktop.Mutate(i, "AXFocused", n => n.Focus())),
++        Mutate("show-menu", PathArgs, "Expand an accessible menu control when supported.", i => Desktop.Mutate(i, "AXShowMenu", n => n.Expand())),
++        Mutate("scroll-to", PathArgs, "Scroll an accessible item into view.", i => Desktop.Mutate(i, "AXScrollToVisible", n => n.ScrollTo())),
++        Mutate("press", PathArgs + " [--expect-description TEXT] [--require-selected] [--require-value-path PATH --require-value TEXT]", "Invoke or select a control; may submit external data.", Desktop.Press, "external-commit"),
++        Mutate("set-value", PathArgs + " --value TEXT", "Set a writable ValuePattern.", i => Desktop.Mutate(i, "AXValue", n => n.SetValue(i.Value("value")))),
++        Mutate("set-selected-text", PathArgs + " --value TEXT", "Replace selected text in a focused writable control.", Input.SelectedText),
++        Mutate("click", "--x X --y Y [--pid PID]", "Click a screen coordinate in the verified target application.", Input.Click),
++        Mutate("hover", "--x X --y Y [--pid PID]", "Move the pointer, without clicking, to a screen coordinate in the verified target application.", Input.Hover),
++        Mutate("type", "--text TEXT [--pid PID]", "Inject Unicode text into the foreground application.", Input.Type),
++        Mutate("paste", "--text TEXT [--pid PID] [--target-path PATH]", "Paste, optionally verifying an exact writable target draft.", Input.Paste),
++        Mutate("scroll", "--direction up|down|left|right [--amount LINES] [--pid PID]", "Inject bounded wheel input into the foreground application.", Input.Scroll),
++        Mutate("key", "--key KEY [--pid PID] [--target-path PATH --require-value TEXT]", "Inject a key; a guarded key requires exact focused draft and PID.", Input.Key, "external-commit")
++    ];
++    internal static Command Get(string name) => All.FirstOrDefault(c => c.Name == name) ?? throw new CliError($"Unknown command: {name}");
++    internal static string Help() => "Blindly4 for Windows — native UI Automation, stateless CLI\n" + string.Join("\n", All.Select(c => $"  {c.Name} {c.Arguments}\n    {c.Summary} [{c.Risk}]")) + "\nGlobal: --profile, --self-test. Paths are live: rediscover before input. Serialize desktop workflows.";
++}
+diff --git a/windows/CLI/SelfTest.cs b/windows/CLI/SelfTest.cs
+index 7c61beb..e82b69e 100644
+--- a/windows/CLI/SelfTest.cs
++++ b/windows/CLI/SelfTest.cs
+@@ -1,115 +1,124 @@
+-using System.Diagnostics;
+-using System.Text.Json;
+-using System.Windows.Forms;
+-
+-namespace Blindly;
+-
+-internal static class SelfTest
+-{
+-    internal static int Run()
+-    {
+-        int passed = 0;
+-        void Check(bool condition) { if (!condition) throw new Exception($"Self-test {passed + 1} failed"); passed++; }
+-        void Reject(Action action, int exit = 64) { try { action(); } catch (CliError e) { Check(e.ExitCode == exit); return; } throw new Exception("Unsafe/invalid input was accepted"); }
+-        Check(Registry.All.Select(c => c.Name).Distinct().Count() == Registry.All.Length);
+-        Check(Registry.Get("press").Risk == "external-commit"); Check(Registry.Get("key").Risk == "external-commit");
+-        Check(Registry.Get("tree").Risk == "read-only");
+-        foreach (var obsolete in new[] { "serve", "snapshot", "changes", "workflow" }) Reject(() => Registry.Get(obsolete));
+-        Reject(() => new Invocation(Registry.Get("tree"), ["--lease", "x"]));
+-        Reject(() => new Invocation(Registry.Get("tree"), ["--depth"]));
+-        Reject(() => new Invocation(Registry.Get("tree"), ["--depth", "2", "--depth", "3"]));
+-        Reject(() => new Invocation(Registry.Get("tree"), ["--depth", "-1"]).Integer("depth", 4));
+-        Reject(() => new Invocation(Registry.Get("click"), ["--x", "NaN"]).Number("x"));
+-        Check(Guards.Path("0.2.15").SequenceEqual(new[] { 0, 2, 15 })); Check(Guards.Path("").Length == 0);
+-        foreach (var path in new[] { "-1", "1..2", "1.", "a", "2147483648", "0. 1" }) Reject(() => Guards.Path(path));
+-        Check(Guards.Exact("caf\u00e9", "cafe\u0301")); Check(Guards.Exact("\u200fمرحبا", "مرحبا"));
+-        Check(!Guards.Exact("draft\n", "draft")); Check(!Guards.Exact("old draft", "draft")); Check(!Guards.Exact("Draft", "draft"));
+-        foreach (var url in new[] { "file:///C:/test", "javascript:alert(1)", "shell:AppsFolder", "relative" }) Reject(() => Guards.Url(url));
+-        Guards.Url("https://example.com"); passed++;
+-        for (int bits = 0; bits < 15; bits++) { int b = bits; Reject(() => Guards.Draft((b & 1) != 0, (b & 2) != 0, (b & 4) != 0, (b & 8) != 0), 77); }
+-        Guards.Draft(true, true, true, true); passed++;
+-        Reject(() => new Invocation(Registry.Get("key"), ["--target-path", "0", "--require-value", "draft"]).Pair("target-path", "require-value", true));
+-        Reject(() => new Invocation(Registry.Get("press"), ["--require-value", "draft"]).Pair("require-value-path", "require-value"));
+-        Check(Native.ParseKey("command+a").SequenceEqual(new ushort[] { 17, 65 }));
+-        Check(Native.ParseKey("enter").SequenceEqual(Native.ParseKey("return")));
+-        Reject(() => Native.ParseKey("ctrl+bogus")); Reject(() => Native.ParseKey("unknown+a"));
+-        Check(System.Runtime.InteropServices.Marshal.SizeOf<Native.INPUT>() == (IntPtr.Size == 8 ? 40 : 28));
+-        Program.Json(new { ok = true, tests = passed, platform = "windows", suite = "permission-free" });
+-        return 0;
+-    }
+-
+-    internal static void TestApp()
+-    {
+-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+-        Application.EnableVisualStyles();
+-        using var form = new Form { Text = "Blindly4 Windows Test Fixture", Width = 660, Height = 350, StartPosition = FormStartPosition.CenterScreen };
+-        var title = new Label { Text = "Local accessibility test — no external actions", Left = 20, Top = 20, Width = 590 };
+-        var edit = new TextBox { Name = "Draft", AccessibleName = "Draft", Multiline = true, Left = 20, Top = 55, Width = 590, Height = 110 };
+-        var result = new Label { Name = "Result", AccessibleName = "Result", Text = "Not submitted", Left = 20, Top = 225, Width = 590 };
+-        var submit = new Button { Name = "Submit", AccessibleName = "Submit test draft", Text = "Submit test draft", Left = 20, Top = 180, Width = 180 };
+-        submit.Click += (_, _) => { result.Text = "Submitted: " + edit.Text; result.AccessibleName = result.Text; };
+-        var check = new CheckBox { AccessibleName = "Test checkbox", Text = "Test checkbox", Left = 230, Top = 180, Width = 180 };
+-        form.Controls.AddRange([title, edit, submit, check, result]);
+-        form.Shown += (_, _) => edit.Focus();
+-        Application.Run(form);
+-    }
+-
+-    internal static int Integration()
+-    {
+-        string exe = Environment.ProcessPath!;
+-        using var fixture = Process.Start(new ProcessStartInfo(exe) { ArgumentList = { "--test-app" }, UseShellExecute = false, CreateNoWindow = true })!;
+-        int tests = 0;
+-        JsonElement Run(int expected, params string[] args)
+-        {
+-            var start = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+-            foreach (var arg in args) start.ArgumentList.Add(arg);
+-            using var process = Process.Start(start)!;
+-            string stdout = process.StandardOutput.ReadToEnd(); string stderr = process.StandardError.ReadToEnd();
+-            process.WaitForExit();
+-            if (process.ExitCode != expected) throw new Exception($"{string.Join(' ', args)} exited {process.ExitCode}, expected {expected}: {stdout} {stderr}");
+-            tests++;
+-            return JsonDocument.Parse(stdout).RootElement.Clone();
+-        }
+-        void Check(bool condition, string reason) { if (!condition) throw new Exception(reason); tests++; }
+-        string Find(string title) => Run(0, "find", "--pid", fixture.Id.ToString(), "--title", title, "--depth", "6").GetProperty("matches")[0].GetProperty("path").GetString()!;
+-        try
+-        {
+-            for (int attempt = 0; attempt < 100 && !Native.Windows().Any(w => w.Pid == fixture.Id); attempt++)
+-            {
+-                if (fixture.HasExited) throw new Exception($"Fixture exited {fixture.ExitCode}");
+-                Thread.Sleep(100);
+-            }
+-            Thread.Sleep(300);
+-            string pid = fixture.Id.ToString();
+-            Check(Run(0, "apps").GetProperty("apps").EnumerateArray().Any(a => a.GetProperty("pid").GetInt32() == fixture.Id), "Fixture missing from apps");
+-            var tree = Run(0, "tree", "--pid", pid, "--depth", "5");
+-            Check(tree.GetProperty("tree").GetProperty("role").GetString() == "AXApplication", "Application root incompatible");
+-            Check(Run(0, "tree", "--pid", pid, "--max-nodes", "1").GetProperty("truncated").GetBoolean(), "Tree must report truncation");
+-            string draft = Find("Draft");
+-            Run(0, "set-value", "--pid", pid, "--path", draft, "--value", "old draft");
+-            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "old draft", "ValuePattern write failed");
+-            Run(0, "focus", "--pid", pid, "--path", Find("Draft"));
+-            Check(Run(0, "focused", "--pid", pid).GetProperty("focused").GetBoolean(), "Focus missing");
+-            Run(0, "paste", "--pid", pid, "--target-path", Find("Draft"), "--text", "");
+-            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "", "Empty guarded draft failed");
+-            string message = "Windows مرحبا café 🪟";
+-            Run(0, "paste", "--pid", pid, "--target-path", Find("Draft"), "--text", message);
+-            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == message, "Unicode paste failed");
+-            Run(77, "key", "--pid", pid, "--key", "return", "--target-path", Find("Draft"), "--require-value", "wrong draft");
+-            Run(77, "press", "--pid", pid, "--path", Find("Submit test draft"), "--require-value-path", Find("Draft"), "--require-value", "wrong draft");
+-            Run(64, "paste", "--pid", pid, "--target-path", Find("Submit test draft"), "--text", "never entered");
+-            Run(64, "press", "--pid", pid, "--path", Find("Submit test draft"), "--expect-description", "Wrong button");
+-            Run(0, "press", "--pid", pid, "--path", Find("Submit test draft"), "--expect-description", "Submit", "--require-value-path", Find("Draft"), "--require-value", message);
+-            Check(Run(0, "find", "--pid", pid, "--title", "Submitted: " + message).GetProperty("matches").GetArrayLength() == 1, "Guarded submission was not observed");
+-            Run(0, "focus", "--pid", pid, "--path", Find("Draft"));
+-            Run(0, "key", "--pid", pid, "--key", "ctrl+a", "--target-path", Find("Draft"), "--require-value", message);
+-            Run(0, "type", "--pid", pid, "--text", "Typed Unicode: مرحبا");
+-            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "Typed Unicode: مرحبا", "SendInput Unicode failed");
+-            Run(77, "inspect", "--pid", pid, "--path", "99999");
+-            Run(77, "click", "--pid", pid, "--x", "-99999", "--y", "-99999");
+-            Program.Json(new { ok = true, tests, suite = "live Windows UI Automation + SendInput", fixturePid = fixture.Id });
+-            return 0;
+-        }
+-        finally { if (!fixture.HasExited) { fixture.CloseMainWindow(); if (!fixture.WaitForExit(3000)) fixture.Kill(); } }
+-    }
+-}
++using System.Diagnostics;
++using System.Text.Json;
++using System.Windows.Forms;
++
++namespace Blindly;
++
++internal static class SelfTest
++{
++    internal static int Run()
++    {
++        int passed = 0;
++        void Check(bool condition) { if (!condition) throw new Exception($"Self-test {passed + 1} failed"); passed++; }
++        void Reject(Action action, int exit = 64) { try { action(); } catch (CliError e) { Check(e.ExitCode == exit); return; } throw new Exception("Unsafe/invalid input was accepted"); }
++        Check(Registry.All.Select(c => c.Name).Distinct().Count() == Registry.All.Length);
++        Check(Registry.Get("press").Risk == "external-commit"); Check(Registry.Get("key").Risk == "external-commit");
++        Check(Registry.Get("tree").Risk == "read-only");
++        foreach (var obsolete in new[] { "serve", "snapshot", "changes", "workflow" }) Reject(() => Registry.Get(obsolete));
++        Reject(() => new Invocation(Registry.Get("tree"), ["--lease", "x"]));
++        Reject(() => new Invocation(Registry.Get("tree"), ["--depth"]));
++        Reject(() => new Invocation(Registry.Get("tree"), ["--depth", "2", "--depth", "3"]));
++        Reject(() => new Invocation(Registry.Get("tree"), ["--depth", "-1"]).Integer("depth", 4));
++        Reject(() => new Invocation(Registry.Get("click"), ["--x", "NaN"]).Number("x"));
++        Check(Guards.Path("0.2.15").SequenceEqual(new[] { 0, 2, 15 })); Check(Guards.Path("").Length == 0);
++        foreach (var path in new[] { "-1", "1..2", "1.", "a", "2147483648", "0. 1" }) Reject(() => Guards.Path(path));
++        Check(Guards.Exact("caf\u00e9", "cafe\u0301")); Check(Guards.Exact("\u200fمرحبا", "مرحبا"));
++        Check(!Guards.Exact("draft\n", "draft")); Check(!Guards.Exact("old draft", "draft")); Check(!Guards.Exact("Draft", "draft"));
++        foreach (var url in new[] { "file:///C:/test", "javascript:alert(1)", "shell:AppsFolder", "relative" }) Reject(() => Guards.Url(url));
++        Guards.Url("https://example.com"); passed++;
++        for (int bits = 0; bits < 15; bits++) { int b = bits; Reject(() => Guards.Draft((b & 1) != 0, (b & 2) != 0, (b & 4) != 0, (b & 8) != 0), 77); }
++        Guards.Draft(true, true, true, true); passed++;
++        Reject(() => new Invocation(Registry.Get("key"), ["--target-path", "0", "--require-value", "draft"]).Pair("target-path", "require-value", true));
++        Reject(() => new Invocation(Registry.Get("press"), ["--require-value", "draft"]).Pair("require-value-path", "require-value"));
++        Check(Native.ParseKey("command+a").SequenceEqual(new ushort[] { 17, 65 }));
++        Check(Native.ParseKey("enter").SequenceEqual(Native.ParseKey("return")));
++        Reject(() => Native.ParseKey("ctrl+bogus")); Reject(() => Native.ParseKey("unknown+a"));
++        Check(System.Runtime.InteropServices.Marshal.SizeOf<Native.INPUT>() == (IntPtr.Size == 8 ? 40 : 28));
++        Check(Registry.Get("find").Options.Contains("identifier") && Registry.Get("find").Options.Contains("under"));
++        Check(Registry.Get("find").Risk == "read-only");
++        Check(Desktop.Matches("identifier", "movie_player", "movie_player")); Check(!Desktop.Matches("identifier", "movie_player_x", "movie_player"));
++        Check(!Desktop.Matches("identifier", "Movie_Player", "movie_player")); Check(!Desktop.Matches("identifier", null, "movie_player"));
++        Check(Desktop.Matches("title", "Pause (k)", "pause")); Check(!Desktop.Matches("title", null, "pause"));
++        Check(Desktop.Filters.Select(f => f.Key).First() == "identifier" && Desktop.Filters.Select(f => f.Key).Last() == "value");
++        Reject(() => new Invocation(Registry.Get("find"), ["--under"]));
++        Check(Registry.Get("hover").Risk == "ui-mutation" && Registry.Get("hover").Options.SequenceEqual(new[] { "pid", "x", "y" }));
++        Reject(() => new Invocation(Registry.Get("hover"), ["--x", "NaN"]).Number("x"));
++        Program.Json(new { ok = true, tests = passed, platform = "windows", suite = "permission-free" });
++        return 0;
++    }
++
++    internal static void TestApp()
++    {
++        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
++        Application.EnableVisualStyles();
++        using var form = new Form { Text = "Blindly4 Windows Test Fixture", Width = 660, Height = 350, StartPosition = FormStartPosition.CenterScreen };
++        var title = new Label { Text = "Local accessibility test — no external actions", Left = 20, Top = 20, Width = 590 };
++        var edit = new TextBox { Name = "Draft", AccessibleName = "Draft", Multiline = true, Left = 20, Top = 55, Width = 590, Height = 110 };
++        var result = new Label { Name = "Result", AccessibleName = "Result", Text = "Not submitted", Left = 20, Top = 225, Width = 590 };
++        var submit = new Button { Name = "Submit", AccessibleName = "Submit test draft", Text = "Submit test draft", Left = 20, Top = 180, Width = 180 };
++        submit.Click += (_, _) => { result.Text = "Submitted: " + edit.Text; result.AccessibleName = result.Text; };
++        var check = new CheckBox { AccessibleName = "Test checkbox", Text = "Test checkbox", Left = 230, Top = 180, Width = 180 };
++        form.Controls.AddRange([title, edit, submit, check, result]);
++        form.Shown += (_, _) => edit.Focus();
++        Application.Run(form);
++    }
++
++    internal static int Integration()
++    {
++        string exe = Environment.ProcessPath!;
++        using var fixture = Process.Start(new ProcessStartInfo(exe) { ArgumentList = { "--test-app" }, UseShellExecute = false, CreateNoWindow = true })!;
++        int tests = 0;
++        JsonElement Run(int expected, params string[] args)
++        {
++            var start = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
++            foreach (var arg in args) start.ArgumentList.Add(arg);
++            using var process = Process.Start(start)!;
++            string stdout = process.StandardOutput.ReadToEnd(); string stderr = process.StandardError.ReadToEnd();
++            process.WaitForExit();
++            if (process.ExitCode != expected) throw new Exception($"{string.Join(' ', args)} exited {process.ExitCode}, expected {expected}: {stdout} {stderr}");
++            tests++;
++            return JsonDocument.Parse(stdout).RootElement.Clone();
++        }
++        void Check(bool condition, string reason) { if (!condition) throw new Exception(reason); tests++; }
++        string Find(string title) => Run(0, "find", "--pid", fixture.Id.ToString(), "--title", title, "--depth", "6").GetProperty("matches")[0].GetProperty("path").GetString()!;
++        try
++        {
++            for (int attempt = 0; attempt < 100 && !Native.Windows().Any(w => w.Pid == fixture.Id); attempt++)
++            {
++                if (fixture.HasExited) throw new Exception($"Fixture exited {fixture.ExitCode}");
++                Thread.Sleep(100);
++            }
++            Thread.Sleep(300);
++            string pid = fixture.Id.ToString();
++            Check(Run(0, "apps").GetProperty("apps").EnumerateArray().Any(a => a.GetProperty("pid").GetInt32() == fixture.Id), "Fixture missing from apps");
++            var tree = Run(0, "tree", "--pid", pid, "--depth", "5");
++            Check(tree.GetProperty("tree").GetProperty("role").GetString() == "AXApplication", "Application root incompatible");
++            Check(Run(0, "tree", "--pid", pid, "--max-nodes", "1").GetProperty("truncated").GetBoolean(), "Tree must report truncation");
++            string draft = Find("Draft");
++            Run(0, "set-value", "--pid", pid, "--path", draft, "--value", "old draft");
++            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "old draft", "ValuePattern write failed");
++            Run(0, "focus", "--pid", pid, "--path", Find("Draft"));
++            Check(Run(0, "focused", "--pid", pid).GetProperty("focused").GetBoolean(), "Focus missing");
++            Run(0, "paste", "--pid", pid, "--target-path", Find("Draft"), "--text", "");
++            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "", "Empty guarded draft failed");
++            string message = "Windows مرحبا café 🪟";
++            Run(0, "paste", "--pid", pid, "--target-path", Find("Draft"), "--text", message);
++            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == message, "Unicode paste failed");
++            Run(77, "key", "--pid", pid, "--key", "return", "--target-path", Find("Draft"), "--require-value", "wrong draft");
++            Run(77, "press", "--pid", pid, "--path", Find("Submit test draft"), "--require-value-path", Find("Draft"), "--require-value", "wrong draft");
++            Run(64, "paste", "--pid", pid, "--target-path", Find("Submit test draft"), "--text", "never entered");
++            Run(64, "press", "--pid", pid, "--path", Find("Submit test draft"), "--expect-description", "Wrong button");
++            Run(0, "press", "--pid", pid, "--path", Find("Submit test draft"), "--expect-description", "Submit", "--require-value-path", Find("Draft"), "--require-value", message);
++            Check(Run(0, "find", "--pid", pid, "--title", "Submitted: " + message).GetProperty("matches").GetArrayLength() == 1, "Guarded submission was not observed");
++            Run(0, "focus", "--pid", pid, "--path", Find("Draft"));
++            Run(0, "key", "--pid", pid, "--key", "ctrl+a", "--target-path", Find("Draft"), "--require-value", message);
++            Run(0, "type", "--pid", pid, "--text", "Typed Unicode: مرحبا");
++            Check(Run(0, "inspect", "--pid", pid, "--path", Find("Draft")).GetProperty("value").GetString() == "Typed Unicode: مرحبا", "SendInput Unicode failed");
++            Run(77, "inspect", "--pid", pid, "--path", "99999");
++            Run(77, "click", "--pid", pid, "--x", "-99999", "--y", "-99999");
++            Program.Json(new { ok = true, tests, suite = "live Windows UI Automation + SendInput", fixturePid = fixture.Id });
++            return 0;
++        }
++        finally { if (!fixture.HasExited) { fixture.CloseMainWindow(); if (!fixture.WaitForExit(3000)) fixture.Kill(); } }
++    }
++}
+diff --git a/windows/Input/Input.cs b/windows/Input/Input.cs
+index 7d0b5a5..bc6191f 100644
+--- a/windows/Input/Input.cs
++++ b/windows/Input/Input.cs
+@@ -1,105 +1,112 @@
+-using System.Windows.Forms;
+-
+-namespace Blindly;
+-
+-internal static class Input
+-{
+-    static int Target(Invocation i) { int pid = i.Pid; Native.Activate(pid); return pid; }
+-    internal static void Click(Invocation i)
+-    {
+-        var x = i.Number("x"); var y = i.Number("y");
+-        if (Math.Abs(x) > 100000 || Math.Abs(y) > 100000) throw new CliError("Screen coordinate out of range");
+-        int pid = Target(i); Native.Click(pid, (int)Math.Round(x), (int)Math.Round(y));
+-        Program.Json(new { x, y, pid, ok = true });
+-    }
+-    internal static void Type(Invocation i)
+-    {
+-        var text = i.Value("text"); int pid = Target(i); Native.Text(pid, text);
+-        Program.Json(new { characters = text.EnumerateRunes().Count(), pid, ok = true });
+-    }
+-    internal static void Key(Invocation i)
+-    {
+-        i.Pair("target-path", "require-value", requirePid: true);
+-        var key = i.Value("key"); var keys = Native.ParseKey(key); int pid = Target(i);
+-        if (i.Has("target-path"))
+-        {
+-            var target = new Desktop(pid).Resolve(i.Value("target-path"));
+-            Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(i.Value("require-value")), Native.ForegroundPid == pid);
+-        }
+-        Native.Key(pid, keys);
+-        var result = new Dictionary<string, object?> { ["key"] = key, ["pid"] = pid, ["ok"] = true };
+-        if (i.Has("target-path")) { result["targetPath"] = i.Value("target-path"); result["verified"] = true; }
+-        Program.Json(result);
+-    }
+-    internal static void SelectedText(Invocation i)
+-    {
+-        var value = i.Value("value"); int pid = i.Pid;
+-        var target = new Desktop(pid).Resolve(i.Value("path"));
+-        if (!target.Writable) throw new CliError("Target is not a writable text control");
+-        target.Focus(); Native.RequireForeground(pid);
+-        if (!target.HasFocus) throw CliError.Access("Target lost focus");
+-        Native.Text(pid, value);
+-        Program.Json(new { path = i.Value("path"), attribute = "AXSelectedText", ok = true });
+-    }
+-    internal static void Scroll(Invocation i)
+-    {
+-        string direction = i.Value("direction").ToLowerInvariant();
+-        if (!new[] { "up", "down", "left", "right" }.Contains(direction)) throw new CliError("Invalid scroll direction");
+-        int amount = i.Integer("amount", 3, 1, 100); int pid = Target(i);
+-        Native.Scroll(pid, direction, amount);
+-        Program.Json(new { direction, amount, pid, ok = true });
+-    }
+-    internal static void Paste(Invocation i)
+-    {
+-        string text = i.Value("text"); string? path = i.Optional("target-path");
+-        if (path != null && !i.Has("pid")) throw new CliError("paste --target-path requires --pid");
+-        int pid = i.Pid;
+-        Node? target = path == null ? null : new Desktop(pid).Resolve(path);
+-        if (target != null && !target.Writable) throw new CliError("Paste blocked: --target-path must resolve to a writable UI Automation text control");
+-        Native.Activate(pid);
+-        if (target != null)
+-        {
+-            target.SetValue("");
+-            if (!target.ExactDraft("")) throw CliError.Access("Paste blocked: existing draft could not be cleared");
+-            target.Focus();
+-            Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(""), Native.ForegroundPid == pid);
+-        }
+-        // Materialize each clipboard format before input; do not restore a live OLE proxy.
+-        var previous = Clipboard.GetDataObject();
+-        var backup = new DataObject();
+-        if (previous != null)
+-            foreach (var format in previous.GetFormats(false))
+-                if (previous.GetData(format, false) is { } data) backup.SetData(format, false, data);
+-        var replacement = new DataObject();
+-        replacement.SetData(DataFormats.UnicodeText, text);
+-        Clipboard.SetDataObject(replacement, true);
+-        uint sequence = Native.GetClipboardSequenceNumber();
+-        try
+-        {
+-            if (target != null) Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(""), Native.ForegroundPid == pid);
+-            Native.Key(pid, Native.ParseKey("ctrl+v"));
+-            if (target != null)
+-            {
+-                bool verified = false;
+-                for (int attempt = 0; attempt < 40; attempt++)
+-                {
+-                    if (target.ExactDraft(text) && target.HasFocus && Native.ForegroundPid == pid) { verified = true; break; }
+-                    Thread.Sleep(25);
+-                }
+-                if (!verified) throw CliError.Access("Paste failed exact draft verification; do not send or repeat input without inspecting the draft");
+-            }
+-            else Thread.Sleep(300);
+-        }
+-        finally
+-        {
+-            // Do not overwrite a clipboard change made by the user during the paste.
+-            if (Native.GetClipboardSequenceNumber() == sequence)
+-            {
+-                if (previous == null) Clipboard.Clear(); else Clipboard.SetDataObject(backup, true);
+-            }
+-        }
+-        var result = new Dictionary<string, object?> { ["characters"] = text.EnumerateRunes().Count(), ["pid"] = pid, ["ok"] = true };
+-        if (path != null) { result["targetPath"] = path; result["verified"] = true; }
+-        Program.Json(result);
+-    }
+-}
++using System.Windows.Forms;
++
++namespace Blindly;
++
++internal static class Input
++{
++    static int Target(Invocation i) { int pid = i.Pid; Native.Activate(pid); return pid; }
++    internal static void Click(Invocation i)
++    {
++        var x = i.Number("x"); var y = i.Number("y");
++        if (Math.Abs(x) > 100000 || Math.Abs(y) > 100000) throw new CliError("Screen coordinate out of range");
++        int pid = Target(i); Native.Click(pid, (int)Math.Round(x), (int)Math.Round(y));
++        Program.Json(new { x, y, pid, ok = true });
++    }
++    internal static void Hover(Invocation i)
++    {
++        var x = i.Number("x"); var y = i.Number("y");
++        if (Math.Abs(x) > 100000 || Math.Abs(y) > 100000) throw new CliError("Screen coordinate out of range");
++        int pid = Target(i); Native.Hover(pid, (int)Math.Round(x), (int)Math.Round(y));
++        Program.Json(new { x, y, pid, ok = true });
++    }
++    internal static void Type(Invocation i)
++    {
++        var text = i.Value("text"); int pid = Target(i); Native.Text(pid, text);
++        Program.Json(new { characters = text.EnumerateRunes().Count(), pid, ok = true });
++    }
++    internal static void Key(Invocation i)
++    {
++        i.Pair("target-path", "require-value", requirePid: true);
++        var key = i.Value("key"); var keys = Native.ParseKey(key); int pid = Target(i);
++        if (i.Has("target-path"))
++        {
++            var target = new Desktop(pid).Resolve(i.Value("target-path"));
++            Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(i.Value("require-value")), Native.ForegroundPid == pid);
++        }
++        Native.Key(pid, keys);
++        var result = new Dictionary<string, object?> { ["key"] = key, ["pid"] = pid, ["ok"] = true };
++        if (i.Has("target-path")) { result["targetPath"] = i.Value("target-path"); result["verified"] = true; }
++        Program.Json(result);
++    }
++    internal static void SelectedText(Invocation i)
++    {
++        var value = i.Value("value"); int pid = i.Pid;
++        var target = new Desktop(pid).Resolve(i.Value("path"));
++        if (!target.Writable) throw new CliError("Target is not a writable text control");
++        target.Focus(); Native.RequireForeground(pid);
++        if (!target.HasFocus) throw CliError.Access("Target lost focus");
++        Native.Text(pid, value);
++        Program.Json(new { path = i.Value("path"), attribute = "AXSelectedText", ok = true });
++    }
++    internal static void Scroll(Invocation i)
++    {
++        string direction = i.Value("direction").ToLowerInvariant();
++        if (!new[] { "up", "down", "left", "right" }.Contains(direction)) throw new CliError("Invalid scroll direction");
++        int amount = i.Integer("amount", 3, 1, 100); int pid = Target(i);
++        Native.Scroll(pid, direction, amount);
++        Program.Json(new { direction, amount, pid, ok = true });
++    }
++    internal static void Paste(Invocation i)
++    {
++        string text = i.Value("text"); string? path = i.Optional("target-path");
++        if (path != null && !i.Has("pid")) throw new CliError("paste --target-path requires --pid");
++        int pid = i.Pid;
++        Node? target = path == null ? null : new Desktop(pid).Resolve(path);
++        if (target != null && !target.Writable) throw new CliError("Paste blocked: --target-path must resolve to a writable UI Automation text control");
++        Native.Activate(pid);
++        if (target != null)
++        {
++            target.SetValue("");
++            if (!target.ExactDraft("")) throw CliError.Access("Paste blocked: existing draft could not be cleared");
++            target.Focus();
++            Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(""), Native.ForegroundPid == pid);
++        }
++        // Materialize each clipboard format before input; do not restore a live OLE proxy.
++        var previous = Clipboard.GetDataObject();
++        var backup = new DataObject();
++        if (previous != null)
++            foreach (var format in previous.GetFormats(false))
++                if (previous.GetData(format, false) is { } data) backup.SetData(format, false, data);
++        var replacement = new DataObject();
++        replacement.SetData(DataFormats.UnicodeText, text);
++        Clipboard.SetDataObject(replacement, true);
++        uint sequence = Native.GetClipboardSequenceNumber();
++        try
++        {
++            if (target != null) Guards.Draft(target.Writable, target.HasFocus, target.ExactDraft(""), Native.ForegroundPid == pid);
++            Native.Key(pid, Native.ParseKey("ctrl+v"));
++            if (target != null)
++            {
++                bool verified = false;
++                for (int attempt = 0; attempt < 40; attempt++)
++                {
++                    if (target.ExactDraft(text) && target.HasFocus && Native.ForegroundPid == pid) { verified = true; break; }
++                    Thread.Sleep(25);
++                }
++                if (!verified) throw CliError.Access("Paste failed exact draft verification; do not send or repeat input without inspecting the draft");
++            }
++            else Thread.Sleep(300);
++        }
++        finally
++        {
++            // Do not overwrite a clipboard change made by the user during the paste.
++            if (Native.GetClipboardSequenceNumber() == sequence)
++            {
++                if (previous == null) Clipboard.Clear(); else Clipboard.SetDataObject(backup, true);
++            }
++        }
++        var result = new Dictionary<string, object?> { ["characters"] = text.EnumerateRunes().Count(), ["pid"] = pid, ["ok"] = true };
++        if (path != null) { result["targetPath"] = path; result["verified"] = true; }
++        Program.Json(result);
++    }
++}
+diff --git a/windows/Input/Native.cs b/windows/Input/Native.cs
+index 2a85e17..8db02b0 100644
+--- a/windows/Input/Native.cs
++++ b/windows/Input/Native.cs
+@@ -1,112 +1,119 @@
+-using System.Diagnostics;
+-using System.Runtime.InteropServices;
+-using System.Text;
+-
+-namespace Blindly;
+-
+-internal static class Native
+-{
+-    internal sealed record Window(nint Handle, int Pid, string Title);
+-    delegate bool EnumWindow(nint handle, nint param);
+-    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback, nint param);
+-    [DllImport("user32.dll")] static extern bool IsWindowVisible(nint handle);
+-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(nint handle, StringBuilder text, int length);
+-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint handle, out int pid);
+-    [DllImport("user32.dll")] static extern nint GetForegroundWindow();
+-    [DllImport("user32.dll")] static extern bool SetForegroundWindow(nint handle);
+-    [DllImport("user32.dll")] static extern bool ShowWindow(nint handle, int command);
+-    [DllImport("user32.dll")] static extern bool IsIconic(nint handle);
+-    [DllImport("user32.dll")] static extern nint WindowFromPoint(Point point);
+-    [DllImport("user32.dll")] static extern nint GetAncestor(nint handle, uint flags);
+-    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+-    [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
+-    [DllImport("user32.dll")] static extern uint SendInput(uint count, INPUT[] inputs, int size);
+-    [DllImport("user32.dll")] internal static extern uint GetClipboardSequenceNumber();
+-    [StructLayout(LayoutKind.Sequential)] internal struct Point { internal int X, Y; }
+-    [StructLayout(LayoutKind.Sequential)] internal struct INPUT { internal uint type; internal Union data; }
+-    [StructLayout(LayoutKind.Explicit)] internal struct Union { [FieldOffset(0)] internal MOUSEINPUT mouse; [FieldOffset(0)] internal KEYBDINPUT keyboard; }
+-    [StructLayout(LayoutKind.Sequential)] internal struct MOUSEINPUT { internal int x, y; internal uint data, flags, time; internal nuint extra; }
+-    [StructLayout(LayoutKind.Sequential)] internal struct KEYBDINPUT { internal ushort key, scan; internal uint flags, time; internal nuint extra; }
+-    internal static int ForegroundPid { get { GetWindowThreadProcessId(GetForegroundWindow(), out int pid); return pid; } }
+-    internal static List<Window> Windows()
+-    {
+-        var result = new List<Window>();
+-        EnumWindows((handle, _) => {
+-            if (IsWindowVisible(handle))
+-            {
+-                var title = new StringBuilder(1024);
+-                GetWindowText(handle, title, title.Capacity);
+-                GetWindowThreadProcessId(handle, out int pid);
+-                if (pid > 0 && title.Length > 0) result.Add(new Window(handle, pid, title.ToString()));
+-            }
+-            return true;
+-        }, 0);
+-        // Stable within an unchanged desktop; foreground z-order must not reorder paths.
+-        return result.OrderBy(w => w.Handle.ToInt64()).ToList();
+-    }
+-    internal static string ProcessName(int pid) { try { return Process.GetProcessById(pid).ProcessName; } catch (ArgumentException) { return ""; } }
+-    internal static object[] Apps() => Windows().GroupBy(w => w.Pid).Select(g => (object)new { pid = g.Key, name = ProcessName(g.Key), bundleIdentifier = (string?)null, frontmost = g.Key == ForegroundPid, windows = g.Select(w => w.Title).ToArray() }).ToArray();
+-    internal static void Activate(int pid)
+-    {
+-        if (ForegroundPid == pid) return;
+-        var window = Windows().FirstOrDefault(w => w.Pid == pid) ?? throw CliError.Access($"No visible window for PID {pid}");
+-        if (IsIconic(window.Handle)) ShowWindow(window.Handle, 9);
+-        SetForegroundWindow(window.Handle);
+-        for (int attempt = 0; attempt < 20 && ForegroundPid != pid; attempt++) Thread.Sleep(25);
+-        RequireForeground(pid);
+-    }
+-    internal static void RequireForeground(int pid)
+-    {
+-        if (pid <= 0 || ForegroundPid != pid) throw CliError.Access("Input blocked: the intended PID is not the foreground application");
+-    }
+-    internal static void RequirePoint(int pid, int x, int y)
+-    {
+-        var handle = GetAncestor(WindowFromPoint(new Point { X = x, Y = y }), 2);
+-        GetWindowThreadProcessId(handle, out int underPoint);
+-        if (underPoint != pid) throw CliError.Access("Input blocked: the screen point belongs to a different application");
+-    }
+-    internal static void Send(int pid, params INPUT[] inputs)
+-    {
+-        RequireForeground(pid);
+-        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) != inputs.Length)
+-            throw CliError.Access("Windows rejected input (possibly an elevated or secure window). Inspect the target before retrying.");
+-    }
+-    internal static INPUT KeyEvent(ushort key, bool up = false, bool unicode = false) => new() { type = 1, data = new Union { keyboard = new KEYBDINPUT { key = unicode ? (ushort)0 : key, scan = unicode ? key : (ushort)0, flags = (up ? 2u : 0u) | (unicode ? 4u : 0u) } } };
+-    internal static void Text(int pid, string text)
+-    {
+-        foreach (char c in text) Send(pid, KeyEvent(c, unicode: true), KeyEvent(c, up: true, unicode: true));
+-    }
+-    internal static void Click(int pid, int x, int y)
+-    {
+-        RequireForeground(pid); RequirePoint(pid, x, y);
+-        if (!SetCursorPos(x, y)) throw CliError.Access("Cannot move the mouse to target");
+-        RequirePoint(pid, x, y);
+-        Send(pid, Mouse(2), Mouse(4));
+-    }
+-    static INPUT Mouse(uint flags, uint data = 0) => new() { type = 0, data = new Union { mouse = new MOUSEINPUT { flags = flags, data = data } } };
+-    internal static void Scroll(int pid, string direction, int amount)
+-    {
+-        if (!GetCursorPos(out var point)) throw CliError.Access("Cannot read mouse position");
+-        RequirePoint(pid, point.X, point.Y);
+-        int delta = amount * 120 * (direction is "down" or "left" ? -1 : 1);
+-        Send(pid, Mouse(direction is "left" or "right" ? 0x1000u : 0x800u, unchecked((uint)delta)));
+-    }
+-    internal static ushort[] ParseKey(string text)
+-    {
+-        var parts = text.ToLowerInvariant().Split('+');
+-        var keys = new List<ushort>();
+-        foreach (var modifier in parts[..^1]) keys.Add(modifier switch { "ctrl" or "control" or "command" or "cmd" => 0x11, "shift" => 0x10, "alt" or "option" => 0x12, _ => throw new CliError($"Unsupported modifier: {modifier}") });
+-        var key = parts[^1];
+-        ushort value = key switch {
+-            "return" or "enter" => 0x0d, "tab" => 9, "escape" or "esc" => 0x1b, "space" => 0x20,
+-            "delete" or "backspace" => 8, "forward-delete" => 0x2e, "up" => 0x26, "down" => 0x28,
+-            "left" => 0x25, "right" => 0x27, "home" => 0x24, "end" => 0x23, "pageup" => 0x21, "pagedown" => 0x22,
+-            _ when key.Length == 1 && char.IsAsciiLetterOrDigit(key[0]) => char.ToUpperInvariant(key[0]),
+-            _ when key.StartsWith('f') && int.TryParse(key[1..], out int f) && f >= 1 && f <= 24 => (ushort)(0x70 + f - 1),
+-            _ => throw new CliError($"Unsupported key: {key}")
+-        };
+-        keys.Add(value);
+-        return keys.ToArray();
+-    }
+-    internal static void Key(int pid, ushort[] keys) => Send(pid, keys.Select(k => KeyEvent(k)).Concat(keys.Reverse().Select(k => KeyEvent(k, up: true))).ToArray());
+-}
++using System.Diagnostics;
++using System.Runtime.InteropServices;
++using System.Text;
++
++namespace Blindly;
++
++internal static class Native
++{
++    internal sealed record Window(nint Handle, int Pid, string Title);
++    delegate bool EnumWindow(nint handle, nint param);
++    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback, nint param);
++    [DllImport("user32.dll")] static extern bool IsWindowVisible(nint handle);
++    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(nint handle, StringBuilder text, int length);
++    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint handle, out int pid);
++    [DllImport("user32.dll")] static extern nint GetForegroundWindow();
++    [DllImport("user32.dll")] static extern bool SetForegroundWindow(nint handle);
++    [DllImport("user32.dll")] static extern bool ShowWindow(nint handle, int command);
++    [DllImport("user32.dll")] static extern bool IsIconic(nint handle);
++    [DllImport("user32.dll")] static extern nint WindowFromPoint(Point point);
++    [DllImport("user32.dll")] static extern nint GetAncestor(nint handle, uint flags);
++    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
++    [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
++    [DllImport("user32.dll")] static extern uint SendInput(uint count, INPUT[] inputs, int size);
++    [DllImport("user32.dll")] internal static extern uint GetClipboardSequenceNumber();
++    [StructLayout(LayoutKind.Sequential)] internal struct Point { internal int X, Y; }
++    [StructLayout(LayoutKind.Sequential)] internal struct INPUT { internal uint type; internal Union data; }
++    [StructLayout(LayoutKind.Explicit)] internal struct Union { [FieldOffset(0)] internal MOUSEINPUT mouse; [FieldOffset(0)] internal KEYBDINPUT keyboard; }
++    [StructLayout(LayoutKind.Sequential)] internal struct MOUSEINPUT { internal int x, y; internal uint data, flags, time; internal nuint extra; }
++    [StructLayout(LayoutKind.Sequential)] internal struct KEYBDINPUT { internal ushort key, scan; internal uint flags, time; internal nuint extra; }
++    internal static int ForegroundPid { get { GetWindowThreadProcessId(GetForegroundWindow(), out int pid); return pid; } }
++    internal static List<Window> Windows()
++    {
++        var result = new List<Window>();
++        EnumWindows((handle, _) => {
++            if (IsWindowVisible(handle))
++            {
++                var title = new StringBuilder(1024);
++                GetWindowText(handle, title, title.Capacity);
++                GetWindowThreadProcessId(handle, out int pid);
++                if (pid > 0 && title.Length > 0) result.Add(new Window(handle, pid, title.ToString()));
++            }
++            return true;
++        }, 0);
++        // Stable within an unchanged desktop; foreground z-order must not reorder paths.
++        return result.OrderBy(w => w.Handle.ToInt64()).ToList();
++    }
++    internal static string ProcessName(int pid) { try { return Process.GetProcessById(pid).ProcessName; } catch (ArgumentException) { return ""; } }
++    internal static object[] Apps() => Windows().GroupBy(w => w.Pid).Select(g => (object)new { pid = g.Key, name = ProcessName(g.Key), bundleIdentifier = (string?)null, frontmost = g.Key == ForegroundPid, windows = g.Select(w => w.Title).ToArray() }).ToArray();
++    internal static void Activate(int pid)
++    {
++        if (ForegroundPid == pid) return;
++        var window = Windows().FirstOrDefault(w => w.Pid == pid) ?? throw CliError.Access($"No visible window for PID {pid}");
++        if (IsIconic(window.Handle)) ShowWindow(window.Handle, 9);
++        SetForegroundWindow(window.Handle);
++        for (int attempt = 0; attempt < 20 && ForegroundPid != pid; attempt++) Thread.Sleep(25);
++        RequireForeground(pid);
++    }
++    internal static void RequireForeground(int pid)
++    {
++        if (pid <= 0 || ForegroundPid != pid) throw CliError.Access("Input blocked: the intended PID is not the foreground application");
++    }
++    internal static void RequirePoint(int pid, int x, int y)
++    {
++        var handle = GetAncestor(WindowFromPoint(new Point { X = x, Y = y }), 2);
++        GetWindowThreadProcessId(handle, out int underPoint);
++        if (underPoint != pid) throw CliError.Access("Input blocked: the screen point belongs to a different application");
++    }
++    internal static void Send(int pid, params INPUT[] inputs)
++    {
++        RequireForeground(pid);
++        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) != inputs.Length)
++            throw CliError.Access("Windows rejected input (possibly an elevated or secure window). Inspect the target before retrying.");
++    }
++    internal static INPUT KeyEvent(ushort key, bool up = false, bool unicode = false) => new() { type = 1, data = new Union { keyboard = new KEYBDINPUT { key = unicode ? (ushort)0 : key, scan = unicode ? key : (ushort)0, flags = (up ? 2u : 0u) | (unicode ? 4u : 0u) } } };
++    internal static void Text(int pid, string text)
++    {
++        foreach (char c in text) Send(pid, KeyEvent(c, unicode: true), KeyEvent(c, up: true, unicode: true));
++    }
++    internal static void Click(int pid, int x, int y)
++    {
++        RequireForeground(pid); RequirePoint(pid, x, y);
++        if (!SetCursorPos(x, y)) throw CliError.Access("Cannot move the mouse to target");
++        RequirePoint(pid, x, y);
++        Send(pid, Mouse(2), Mouse(4));
++    }
++    internal static void Hover(int pid, int x, int y)
++    {
++        RequireForeground(pid); RequirePoint(pid, x, y);
++        // Two positions so the target always observes movement, even if the pointer was already there.
++        if (!SetCursorPos(x + 1, y) || !SetCursorPos(x, y)) throw CliError.Access("Cannot move the mouse to target");
++        RequirePoint(pid, x, y);
++    }
++    static INPUT Mouse(uint flags, uint data = 0) => new() { type = 0, data = new Union { mouse = new MOUSEINPUT { flags = flags, data = data } } };
++    internal static void Scroll(int pid, string direction, int amount)
++    {
++        if (!GetCursorPos(out var point)) throw CliError.Access("Cannot read mouse position");
++        RequirePoint(pid, point.X, point.Y);
++        int delta = amount * 120 * (direction is "down" or "left" ? -1 : 1);
++        Send(pid, Mouse(direction is "left" or "right" ? 0x1000u : 0x800u, unchecked((uint)delta)));
++    }
++    internal static ushort[] ParseKey(string text)
++    {
++        var parts = text.ToLowerInvariant().Split('+');
++        var keys = new List<ushort>();
++        foreach (var modifier in parts[..^1]) keys.Add(modifier switch { "ctrl" or "control" or "command" or "cmd" => 0x11, "shift" => 0x10, "alt" or "option" => 0x12, _ => throw new CliError($"Unsupported modifier: {modifier}") });
++        var key = parts[^1];
++        ushort value = key switch {
++            "return" or "enter" => 0x0d, "tab" => 9, "escape" or "esc" => 0x1b, "space" => 0x20,
++            "delete" or "backspace" => 8, "forward-delete" => 0x2e, "up" => 0x26, "down" => 0x28,
++            "left" => 0x25, "right" => 0x27, "home" => 0x24, "end" => 0x23, "pageup" => 0x21, "pagedown" => 0x22,
++            _ when key.Length == 1 && char.IsAsciiLetterOrDigit(key[0]) => char.ToUpperInvariant(key[0]),
++            _ when key.StartsWith('f') && int.TryParse(key[1..], out int f) && f >= 1 && f <= 24 => (ushort)(0x70 + f - 1),
++            _ => throw new CliError($"Unsupported key: {key}")
++        };
++        keys.Add(value);
++        return keys.ToArray();
++    }
++    internal static void Key(int pid, ushort[] keys) => Send(pid, keys.Select(k => KeyEvent(k)).Concat(keys.Reverse().Select(k => KeyEvent(k, up: true))).ToArray());
++}
+-- 
+2.50.1.windows.1
+
+
+From fb2f4fa3b4bb2e93347e6a0d79575ff7700cd39b Mon Sep 17 00:00:00 2001
+From: muham <mhammar029@gmail.com>
+Date: Sun, 18 Oct 2026 15:32:48 +0400
+Subject: [PATCH 2/2] windows: isolated Chrome open (--chrome-profile),
+ --format xml for tree/find, --expect-description on set-value/focus
+
+---
+ windows/Accessibility/Desktop.cs | 28 ++++++++-----
+ windows/CLI/Registry.cs          | 13 +++---
+ windows/CLI/SelfTest.cs          | 12 ++++++
+ windows/Input/Launch.cs          | 48 +++++++++++++++++++++
+ windows/Support/Xml.cs           | 71 ++++++++++++++++++++++++++++++++
+ 5 files changed, 157 insertions(+), 15 deletions(-)
+ create mode 100644 windows/Input/Launch.cs
+ create mode 100644 windows/Support/Xml.cs
+
+diff --git a/windows/Accessibility/Desktop.cs b/windows/Accessibility/Desktop.cs
+index 64fe819..77d2cb4 100644
+--- a/windows/Accessibility/Desktop.cs
++++ b/windows/Accessibility/Desktop.cs
+@@ -38,22 +38,24 @@ internal sealed class Desktop
+         var desktop = new Desktop(i.Pid);
+         int remaining = i.Integer("max-nodes", 250, 1, 10000);
+         int depth = i.Integer("depth", 4, 0, 64);
+-        bool truncated = false;
+-        Dictionary<string, object?> Build(Node n, int d)
++        bool xml = Xml.Format(i) == "xml", truncated = false;
++        Dictionary<string, object?> Build(Node n, int d, string path)
+         {
+             remaining--;
+-            var row = n.Detail();
++            var row = n.Detail(xml ? path : null);
+             var children = new List<object>();
++            int index = 0;
+             foreach (var child in n.Children())
+             {
+                 if (remaining == 0 || d == 0) { truncated = true; break; }
+-                children.Add(Build(child, d - 1));
++                children.Add(Build(child, d - 1, path.Length == 0 ? $"{index}" : $"{path}.{index}"));
++                index++;
+             }
+             if (children.Count > 0) row["children"] = children;
+             return row;
+         }
+-        var tree = Build(desktop.root, depth);
+-        Program.Json(new { tree, truncated });
++        var tree = Build(desktop.root, depth, "");
++        if (xml) Xml.Tree(tree, truncated); else Program.Json(new { tree, truncated });
+     }
+     internal static void Show(Invocation i)
+     {
+@@ -81,7 +83,8 @@ internal sealed class Desktop
+         int limit = i.Integer("limit", 25, 1, 10000), visited = 0;
+         var under = i.Optional("under") ?? "";
+         Guards.Path(under);
+-        var matches = new List<object>();
++        bool xml = Xml.Format(i) == "xml";
++        var matches = new List<Dictionary<string, object?>>();
+         bool truncated = false;
+         foreach (var (node, path) in new Desktop(i.Pid).Walk(i.Integer("depth", 8, 0, 64), under))
+         {
+@@ -89,7 +92,7 @@ internal sealed class Desktop
+             if (active.All(f => Matches(f.Key, f.Read(node), i.Value(f.Key)))) matches.Add(node.Detail(path));
+             if (matches.Count >= limit) { truncated = true; break; }
+         }
+-        Program.Json(new { matches, truncated });
++        if (xml) Xml.Matches(matches, truncated); else Program.Json(new { matches, truncated });
+     }
+     internal static void Focused(Invocation i)
+     {
+@@ -102,17 +105,22 @@ internal sealed class Desktop
+     {
+         var path = i.Value("path");
+         var target = new Desktop(i.Pid).Resolve(path);
++        Expect(i, target);
+         mutate(target);
+         Program.Json(new { path, action, ok = true });
+     }
++    static void Expect(Invocation i, Node target)
++    {
++        if (i.Has("expect-description") && !(target.Detail()["description"]?.ToString() ?? "").Contains(i.Value("expect-description"), StringComparison.OrdinalIgnoreCase))
++            throw new CliError($"{i.Value("path")} does not match --expect-description");
++    }
+     internal static void Press(Invocation i)
+     {
+         i.Pair("require-value-path", "require-value");
+         var desktop = new Desktop(i.Pid);
+         var path = i.Value("path");
+         var target = desktop.Resolve(path);
+-        if (i.Has("expect-description") && !(target.Detail()["description"]?.ToString() ?? "").Contains(i.Value("expect-description"), StringComparison.OrdinalIgnoreCase))
+-            throw new CliError("press target does not match --expect-description");
++        Expect(i, target);
+         if (i.Has("require-value-path") && !desktop.Resolve(i.Value("require-value-path")).ExactDraft(i.Value("require-value")))
+             throw CliError.Access("Press blocked: the draft does not exactly match --require-value");
+         target.Press();
+diff --git a/windows/CLI/Registry.cs b/windows/CLI/Registry.cs
+index 4e4a0f9..688a247 100644
+--- a/windows/CLI/Registry.cs
++++ b/windows/CLI/Registry.cs
+@@ -20,18 +20,21 @@ internal static class Registry
+             _ => Program.Json(new { trusted = true, platform = "windows", note = "Available on the current interactive desktop at the same integrity level. Does not elevate or change permissions." })),
+         new("apps", "", "List visible GUI applications and PIDs.", "read-only", false, _ => Program.Json(new { apps = Native.Apps() })),
+         Mutate("activate", "--pid PID", "Bring an application to the foreground and verify it.", i => { int pid = i.Integer("pid", 0, 1); if (pid == 0) throw new CliError("Missing --pid"); Native.Activate(pid); Program.Json(new { pid, ok = true }); }),
+-        Mutate("open", "--url URL", "Open an HTTP, HTTPS or Slack URL.", i => { var url = i.Value("url"); Guards.Url(url); System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); Program.Json(new { url, ok = true }); }),
+-        Read("tree", "[--pid PID] [--depth N] [--max-nodes N]", "Read a bounded live accessibility tree.", Desktop.Tree),
++        Mutate("open", "--url URL [--chrome-profile DIR]", "Open an HTTP, HTTPS or Slack URL; --chrome-profile launches an isolated, accessible Chrome and reports its pid.", i => {
++            var url = i.Value("url"); Guards.Url(url);
++            if (i.Has("chrome-profile")) { int pid = Launch.Chrome(url, Launch.ProfileDir(i.Value("chrome-profile"))); Program.Json(new { url, pid, ok = true }); return; }
++            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); Program.Json(new { url, ok = true }); }),
++        Read("tree", "[--pid PID] [--depth N] [--max-nodes N] [--format json|xml]", "Read a bounded live accessibility tree; --format xml prints the XML UI tree.", Desktop.Tree),
+         Read("show", "[--pid PID] [--depth N]", "Print a readable live outline with paths.", Desktop.Show),
+-        Read("find", "[--title TEXT] [--role ROLE] [--value TEXT] [--description TEXT] [--identifier ID] [--under PATH] [--pid PID] [--depth N] [--limit N]", "Search current accessible properties; --identifier is exact, --under limits the search to one subtree.", Desktop.Find),
++        Read("find", "[--title TEXT] [--role ROLE] [--value TEXT] [--description TEXT] [--identifier ID] [--under PATH] [--pid PID] [--depth N] [--limit N] [--format json|xml]", "Search current accessible properties; --identifier is exact, --under limits the search to one subtree.", Desktop.Find),
+         Read("focused", "[--pid PID]", "Read the focused control without changing focus.", Desktop.Focused),
+         Read("inspect", PathArgs, "Inspect one live element.", i => Program.Json(new Desktop(i.Pid).Resolve(i.Value("path")).Detail())),
+         Read("actions", PathArgs, "List supported actions.", i => Program.Json(new { path = i.Value("path"), actions = new Desktop(i.Pid).Resolve(i.Value("path")).Actions() })),
+-        Mutate("focus", PathArgs, "Focus an element.", i => Desktop.Mutate(i, "AXFocused", n => n.Focus())),
++        Mutate("focus", PathArgs + " [--expect-description TEXT]", "Focus an element.", i => Desktop.Mutate(i, "AXFocused", n => n.Focus())),
+         Mutate("show-menu", PathArgs, "Expand an accessible menu control when supported.", i => Desktop.Mutate(i, "AXShowMenu", n => n.Expand())),
+         Mutate("scroll-to", PathArgs, "Scroll an accessible item into view.", i => Desktop.Mutate(i, "AXScrollToVisible", n => n.ScrollTo())),
+         Mutate("press", PathArgs + " [--expect-description TEXT] [--require-selected] [--require-value-path PATH --require-value TEXT]", "Invoke or select a control; may submit external data.", Desktop.Press, "external-commit"),
+-        Mutate("set-value", PathArgs + " --value TEXT", "Set a writable ValuePattern.", i => Desktop.Mutate(i, "AXValue", n => n.SetValue(i.Value("value")))),
++        Mutate("set-value", PathArgs + " --value TEXT [--expect-description TEXT]", "Set a writable ValuePattern.", i => Desktop.Mutate(i, "AXValue", n => n.SetValue(i.Value("value")))),
+         Mutate("set-selected-text", PathArgs + " --value TEXT", "Replace selected text in a focused writable control.", Input.SelectedText),
+         Mutate("click", "--x X --y Y [--pid PID]", "Click a screen coordinate in the verified target application.", Input.Click),
+         Mutate("hover", "--x X --y Y [--pid PID]", "Move the pointer, without clicking, to a screen coordinate in the verified target application.", Input.Hover),
+diff --git a/windows/CLI/SelfTest.cs b/windows/CLI/SelfTest.cs
+index e82b69e..ec550ef 100644
+--- a/windows/CLI/SelfTest.cs
++++ b/windows/CLI/SelfTest.cs
+@@ -43,6 +43,18 @@ internal static class SelfTest
+         Reject(() => new Invocation(Registry.Get("find"), ["--under"]));
+         Check(Registry.Get("hover").Risk == "ui-mutation" && Registry.Get("hover").Options.SequenceEqual(new[] { "pid", "x", "y" }));
+         Reject(() => new Invocation(Registry.Get("hover"), ["--x", "NaN"]).Number("x"));
++        Check(Registry.Get("open").Options.Contains("chrome-profile"));
++        Check(Registry.Get("tree").Options.Contains("format") && Registry.Get("find").Options.Contains("format"));
++        Check(Registry.Get("set-value").Options.Contains("expect-description") && Registry.Get("focus").Options.Contains("expect-description"));
++        Check(Xml.Element(new Dictionary<string, object?> { ["role"] = "AXButton", ["path"] = "0.1", ["title"] = "Pause (k)", ["description"] = "Pause (k)", ["actions"] = new[] { "AXPress" } })
++            == "<AXButton path=\"0.1\" title=\"Pause (k)\" actions=\"AXPress\" />");
++        Check(Xml.Element(new Dictionary<string, object?> { ["role"] = "AXStaticText", ["title"] = "a<b & \"c\"" }) == "<AXStaticText title=\"a&lt;b &amp; &quot;c&quot;\" />");
++        Check(Xml.Element(new Dictionary<string, object?> { ["role"] = "AXLink", ["title"] = "x", ["description"] = "y", ["identifier"] = "video-title", ["enabled"] = false, ["position"] = new { x = 1.0, y = 2.0 }, ["size"] = new { width = 3.0, height = 4.0 } })
++            == "<AXLink title=\"x\" id=\"video-title\" description=\"y\" frame=\"1,2,3,4\" enabled=\"false\" />");
++        Reject(() => Launch.ProfileDir("relative\\dir")); Reject(() => Launch.ProfileDir("C:\\a\"b"));
++        Check(Launch.ProfileDir("C:\\profiles\\run1") == "C:\\profiles\\run1");
++        Check(Launch.Arguments("https://www.youtube.com/", "C:\\p\\run 1\\") == "\"--user-data-dir=C:\\p\\run 1\" --force-renderer-accessibility --autoplay-policy=no-user-gesture-required --no-first-run --no-default-browser-check --window-size=1400,1000 --new-window \"https://www.youtube.com/\"");
++        Reject(() => Xml.Format(new Invocation(Registry.Get("find"), ["--format", "yaml"])));
+         Program.Json(new { ok = true, tests = passed, platform = "windows", suite = "permission-free" });
+         return 0;
+     }
+diff --git a/windows/Input/Launch.cs b/windows/Input/Launch.cs
+new file mode 100644
+index 0000000..45d5a4b
+--- /dev/null
++++ b/windows/Input/Launch.cs
+@@ -0,0 +1,48 @@
++using System.Diagnostics;
++using System.IO;
++
++namespace Blindly;
++
++// Launches an isolated Chrome whose web content is exposed to UI Automation, and reports its PID.
++internal static class Launch
++{
++    static readonly string[] Flags = [
++        "--force-renderer-accessibility", "--autoplay-policy=no-user-gesture-required", "--no-first-run",
++        "--no-default-browser-check", "--window-size=1400,1000", "--new-window"
++    ];
++    internal static string ProfileDir(string dir)
++    {
++        if (!Path.IsPathFullyQualified(dir) || dir.Contains('"'))
++            throw new CliError("--chrome-profile must be an absolute directory path without quotes");
++        return dir;
++    }
++    static string ChromePath()
++    {
++        const string appPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe";
++        var candidates = new[] {
++            Microsoft.Win32.Registry.LocalMachine.OpenSubKey(appPath)?.GetValue(null) as string,
++            Microsoft.Win32.Registry.CurrentUser.OpenSubKey(appPath)?.GetValue(null) as string,
++            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Google\Chrome\Application\chrome.exe"),
++            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Google\Chrome\Application\chrome.exe")
++        };
++        return candidates.FirstOrDefault(File.Exists) ?? throw CliError.Access("Google Chrome is not installed");
++    }
++    // Trailing backslashes are trimmed so the closing quote is not escaped.
++    internal static string Arguments(string url, string profile) =>
++        string.Join(' ', Flags.Prepend($"\"--user-data-dir={profile.TrimEnd('\\')}\"").Append($"\"{url}\""));
++    internal static int Chrome(string url, string profile)
++    {
++        Directory.CreateDirectory(profile);
++        // ShellExecute does not hand Chrome our stdout/stderr, so callers reading blindly4's output are not
++        // left waiting on a pipe that the long-lived browser keeps open.
++        var start = new ProcessStartInfo(ChromePath(), Arguments(url, profile)) { UseShellExecute = true };
++        using var process = Process.Start(start) ?? throw CliError.Access("Chrome did not start");
++        for (int attempt = 0; attempt < 150; attempt++)
++        {
++            if (Native.Windows().Any(w => w.Pid == process.Id)) return process.Id;
++            if (process.HasExited) break;
++            Thread.Sleep(100);
++        }
++        throw CliError.Access("Chrome did not open a window for the isolated profile");
++    }
++}
+diff --git a/windows/Support/Xml.cs b/windows/Support/Xml.cs
+new file mode 100644
+index 0000000..b66ce8d
+--- /dev/null
++++ b/windows/Support/Xml.cs
+@@ -0,0 +1,71 @@
++using System.Globalization;
++using System.Text;
++
++namespace Blindly;
++
++// Renders element details as the XML UI tree: element name = role, one element per line.
++internal static class Xml
++{
++    internal static string Format(Invocation i)
++    {
++        var format = i.Optional("format") ?? "json";
++        if (format is not ("json" or "xml")) throw new CliError("--format must be json or xml");
++        return format;
++    }
++    // Control characters (including newlines) become spaces so every element stays on one line.
++    internal static string Escape(string text) => new StringBuilder(text.Length).AppendJoin("", text.Select(c => c switch {
++        '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", '"' => "&quot;",
++        _ when char.IsControl(c) => " ",
++        _ => c.ToString()
++    })).ToString();
++    static string? Text(object? value) => value switch {
++        null => null, string s => s, bool b => b ? "true" : "false",
++        _ => Convert.ToString(value, CultureInfo.InvariantCulture)
++    };
++    static double Number(object box, string name) => Convert.ToDouble(box.GetType().GetProperty(name)?.GetValue(box) ?? 0.0, CultureInfo.InvariantCulture);
++    static string Name(object? role) => role is string r && r.Length > 0 && char.IsAsciiLetter(r[0]) && r.All(char.IsAsciiLetterOrDigit) ? r : "AXGroup";
++    static string Attributes(IReadOnlyDictionary<string, object?> row)
++    {
++        var parts = new List<(string Name, string Value)>();
++        void Add(string name, string? value) { if (!string.IsNullOrEmpty(value)) parts.Add((name, value)); }
++        var title = Text(row.GetValueOrDefault("title"));
++        var description = Text(row.GetValueOrDefault("description"));
++        Add("path", Text(row.GetValueOrDefault("path")));
++        Add("title", title);
++        Add("value", Text(row.GetValueOrDefault("value")));
++        Add("id", Text(row.GetValueOrDefault("identifier")));
++        if (description != title) Add("description", description);
++        if (row.GetValueOrDefault("actions") is string[] actions) Add("actions", string.Join(' ', actions));
++        if (row.GetValueOrDefault("position") is { } p && row.GetValueOrDefault("size") is { } s)
++            Add("frame", string.Join(',', new[] { Number(p, "x"), Number(p, "y"), Number(s, "width"), Number(s, "height") }
++                .Select(n => Math.Round(n).ToString(CultureInfo.InvariantCulture))));
++        if (row.GetValueOrDefault("enabled") is false) Add("enabled", "false");
++        if (row.GetValueOrDefault("focused") is true) Add("focused", "true");
++        if (row.GetValueOrDefault("selected") is true) Add("selected", "true");
++        return string.Concat(parts.Select(a => $" {a.Name}=\"{Escape(a.Value)}\""));
++    }
++    internal static string Element(IReadOnlyDictionary<string, object?> row) => $"<{Name(row.GetValueOrDefault("role"))}{Attributes(row)} />";
++    internal static void Matches(IEnumerable<Dictionary<string, object?>> matches, bool truncated)
++    {
++        Console.WriteLine($"<matches truncated=\"{(truncated ? "true" : "false")}\">");
++        foreach (var row in matches) Console.WriteLine("  " + Element(row));
++        Console.WriteLine("</matches>");
++    }
++    internal static void Tree(Dictionary<string, object?> tree, bool truncated)
++    {
++        Console.WriteLine($"<tree truncated=\"{(truncated ? "true" : "false")}\">");
++        Write(tree, 1);
++        Console.WriteLine("</tree>");
++        static void Write(Dictionary<string, object?> row, int depth)
++        {
++            var indent = new string(' ', depth * 2);
++            if (row.GetValueOrDefault("children") is List<object> { Count: > 0 } children)
++            {
++                Console.WriteLine(indent + Element(row)[..^3] + ">");
++                foreach (var child in children.Cast<Dictionary<string, object?>>()) Write(child, depth + 1);
++                Console.WriteLine($"{indent}</{Name(row.GetValueOrDefault("role"))}>");
++            }
++            else Console.WriteLine(indent + Element(row));
++        }
++    }
++}
+-- 
+2.50.1.windows.1
+
