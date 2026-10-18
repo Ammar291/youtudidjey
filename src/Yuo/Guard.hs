@@ -9,6 +9,7 @@ import Data.List (find)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Yuo.Types (Origin (..))
 
 -- | Labels of controls with public or account side effects, matched as a case-insensitive prefix
 -- so that a song merely containing a word ("Madonna - Like A Prayer") is still playable.
@@ -31,10 +32,12 @@ options = \case
   _ : rest -> options rest
   [] -> []
 
-allowedCall :: [Text] -> Either Text ()
-allowedCall [] = Left "empty blindly4 call"
-allowedCall (cmd : args)
+-- | Opening and closing the browser belong to the driver; the LLM and solution.py only use the page.
+allowedCall :: Origin -> [Text] -> Either Text ()
+allowedCall _ [] = Left "empty blindly4 call"
+allowedCall origin (cmd : args)
   | cmd `elem` readOnlyOrHarmless = Right ()
+  | cmd == "open" && origin /= ODriver = Left "only yuotudidjey itself opens the browser"
   | cmd == "open" =
       if maybe False ("https://www.youtube.com/" `T.isPrefixOf`) (opt "url") && isJust (opt "chrome-profile")
         then Right ()
@@ -56,4 +59,5 @@ allowedCall (cmd : args)
       Just k
         | k `elem` ["escape", "esc", "f5"] || (T.length k == 1 && T.all isDigit k) -> Right ()
         | k `elem` ["return", "enter"] && isJust (opt "target-path") && isJust (opt "require-value") -> Right ()
+        | k == "alt+f4" && origin == ODriver -> Right ()
       _ -> Left "key allows escape, f5, a digit, or return/enter guarded by --target-path and --require-value"

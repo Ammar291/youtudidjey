@@ -18,6 +18,7 @@ common shared
         directory,
         filepath,
         process,
+        scientific,
         stm,
         text,
         time,
@@ -29,6 +30,7 @@ library
     hs-source-dirs:   src
     exposed-modules:
         Yuo.Blindly
+        Yuo.Chrome
         Yuo.Cli
         Yuo.Concurrent
         Yuo.Guard

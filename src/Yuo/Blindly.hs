@@ -177,7 +177,7 @@ call :: B4 -> Origin -> [Text] -> IO (Int, Text, Text)
 call b4 origin args = do
   start <- nowPosix
   t0 <- getMonotonicTime
-  result <- case allowedCall args of
+  result <- case allowedCall origin args of
     Left reason -> pure (64, "{\"error\":" <> jsonString reason <> ",\"code\":\"guard_refused\"}", "")
     Right () -> invoke (b4Backend b4) args
   t1 <- getMonotonicTime
