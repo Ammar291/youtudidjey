@@ -63,7 +63,7 @@ data ObsState
 data ObsOut
   = OutPlay PlayInfo
   | OutAd Song Double Double
-  | OutPauseMargin Song Double
+  | OutPauseMargin Song Double Double -- ^ song, pause time, seconds remaining
   deriving (Eq, Show)
 
 -- | Builds a probe from the pane name, the address bar value and any player nodes read.
@@ -123,7 +123,7 @@ assign song t _ = Awaiting song t 0 Nothing
 -- computed from its own start time: remaining = start + duration - t.
 pausedAt :: Double -> Maybe Int -> ObsState -> (ObsState, [ObsOut])
 pausedAt t duration = \case
-  Watching info -> (Idle, [OutPauseMargin (piSong info) (piStartEst info + fromIntegral d - t) | Just d <- [duration]])
+  Watching info -> (Idle, [OutPauseMargin (piSong info) t (piStartEst info + fromIntegral d - t) | Just d <- [duration]])
   Awaiting {} -> (Idle, [])
   s -> (s, [])
 
@@ -254,6 +254,6 @@ logOut b4 stage = \case
       , "ad_s" .= piAdSecs i
       ]
   OutAd song a b -> emit b AdSeen song ["ad_start" .= a, "ad_end" .= b, "ad_s" .= (b - a)]
-  OutPauseMargin song m -> nowPosix >>= \t -> emit t PauseObserved song ["remaining_s" .= m]
+  OutPauseMargin song t m -> emit t PauseObserved song ["remaining_s" .= m]
   where
     emit t kind song fields = logEvent (b4Logger b4) (Event t stage OObserver kind (Just song) (KM.fromList fields))

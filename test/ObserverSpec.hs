@@ -73,7 +73,7 @@ spec = describe "stepObserver" $ do
   it "computes the pause margin from the observed start and the stage's duration" $ do
     let watching = fst (stepObserver (assign lucky 40 Idle) (probeFromNodes 50 "Daft Punk - Get Lucky - YouTube - Audio playing - Google Chrome" watchUrl [pauseButton]))
         (s1, o1) = pausedAt 293 (Just 247) watching
-    [m | OutPauseMargin _ m <- o1] `shouldBe` [4]
+    [(t, m) | OutPauseMargin _ t m <- o1] `shouldBe` [(293, 4)]
     s1 `shouldBe` Idle
 
   it "reports no margin when the duration is unknown" $ do
