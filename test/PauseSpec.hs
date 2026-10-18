@@ -16,7 +16,7 @@ spec = do
     it "accepts a song that began loading several seconds after the ad ended, overriding an ad-length plan" $
       acceptStart 53.8 5 (74.2, Progress 9 247) `shouldBe` Just (65.2, 247)
     it "rejects a start implausibly long after playback was seen" $
-      acceptStart 60 249 (200, Progress 10 247) `shouldBe` Nothing
+      acceptStart 60 249 (200, Progress 70 247) `shouldBe` Nothing
 
   describe "plannedDuration" $ do
     it "trusts a song-length plan" $

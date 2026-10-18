@@ -11,6 +11,7 @@ module Yuo.Observer
   , pausedAt
   , refineStart
   , hoverReading
+  , refineWithHover
   , probeFromNodes
   , Observer (..)
   , withObserver
@@ -190,7 +191,7 @@ withObserver b4 stage act = do
       -- measurement ends when the song itself started, not when the ad's markers vanished.
       refined = \case
         OutPlay i -> do
-          i' <- refineWithHover b4 player i
+          i' <- refineWithHover 20 2000 b4 player i
           atomically $
             readTVar state >>= \case
               Watching x | x == i -> writeTVar state (Watching i') >> writeTVar latest (Just i')
@@ -213,12 +214,13 @@ hoverReading b4 origin player = case nCenter player of
     t <- nowPosix
     pure ((t,) <$> (listToMaybe sliders >>= nValue >>= parseProgress))
 
--- | Up to three readings, two seconds apart, until one refines the start.
-refineWithHover :: B4 -> TVar (Maybe Node) -> PlayInfo -> IO PlayInfo
-refineWithHover b4 player = go (3 :: Int)
+-- | @refineWithHover attempts delayMs@: keeps reading until one refines the start — through
+-- unlabeled bumper ads (their slider is ad-length) and the song's own loading.
+refineWithHover :: Int -> Int -> B4 -> TVar (Maybe Node) -> PlayInfo -> IO PlayInfo
+refineWithHover attempts delayMs b4 player = go attempts
   where
     go n info = do
-      threadDelay 2000000
+      threadDelay (delayMs * 1000)
       reading <- readTVarIO player >>= maybe (pure Nothing) (hoverReading b4 OObserver)
       let info' = maybe info (refineStart info) reading
       if info' /= info || n <= 1 then pure info' else go (n - 1) info

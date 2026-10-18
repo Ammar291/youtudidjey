@@ -6,7 +6,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Hspec
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (atomically, newTVarIO)
+import Data.IORef
 import System.IO.Temp (withSystemTempDirectory)
 import Yuo.Blindly (Backend (..), ChromeGone (..), newB4)
 import Yuo.Log (withLogger)
@@ -14,7 +15,7 @@ import Yuo.Observer
 import Yuo.Songs (Song (..))
 import Yuo.Time (Progress (..))
 import Yuo.Tree
-import Yuo.Types (Path (..), Pid (..), Stage (..))
+import Yuo.Types (Path (..), Pid (..), Stage (..), nowPosix)
 
 json :: FilePath -> IO Value
 json f = eitherDecodeFileStrict' ("test/fixtures/" <> f) >>= either fail pure
@@ -44,7 +45,7 @@ plays :: [ObsOut] -> [PlayInfo]
 plays outs = [p | OutPlay p <- outs]
 
 spec :: Spec
-spec = observerLoopSpec >> adMarkerSpec >> refineSpec >> stepSpec
+spec = observerLoopSpec >> adMarkerSpec >> refineSpec >> refineLoopSpec >> stepSpec
 
 stepSpec :: Spec
 stepSpec = describe "stepObserver" $ do
@@ -147,3 +148,22 @@ refineSpec = describe "refineStart" $ do
     refineStart seen (74.2, Progress 2 5) `shouldBe` seen
   it "ignores a reading that would put the start before the ad ended" $
     refineStart seen (74.2, Progress 60 247) `shouldBe` seen
+
+refineLoopSpec :: Spec
+refineLoopSpec = describe "refineWithHover" $
+  it "keeps reading through an unlabeled bumper ad until the song's own slider shows" $
+    withSystemTempDirectory "obs" $ \dir -> withLogger dir $ \lg -> do
+      readsSoFar <- newIORef (0 :: Int)
+      let sliderText n = if n < 4 then "0 Minutes 3 Seconds of 0 Minutes 5 Seconds" else "0 Minutes 2 Seconds of 4 Minutes 7 Seconds"
+          page = Backend $ \args ->
+            if take 1 args == ["find"] && "Seek slider" `elem` args
+              then do
+                n <- atomicModifyIORef' readsSoFar (\k -> (k + 1, k))
+                pure (0, "{\"matches\":[{\"role\":\"AXSlider\",\"path\":\"0.5.4\",\"title\":\"Seek slider\",\"value\":\"" <> sliderText n <> "\"}],\"truncated\":false}", "")
+              else pure (0, "{\"ok\":true}", "")
+      b <- newB4 page (Just (Pid 7)) lg Exploration
+      player <- newTVarIO (Just (Node (Path "0.5") "AXGroup" "YouTube Video Player" Nothing "movie_player" [] (Just (600, 500))))
+      t0 <- nowPosix
+      r <- refineWithHover 10 50 b player (PlayInfo lucky 0 t0 t0 Nothing Nothing 0)
+      piDuration r `shouldBe` Just 247
+      readIORef readsSoFar `shouldReturn` 5

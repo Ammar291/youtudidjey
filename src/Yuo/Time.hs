@@ -63,9 +63,10 @@ parseResultDuration t = case trailing (reverse (T.words t)) of
 
 -- | Where a song's own start (time − position of a fresh reading) may fall relative to the moment
 -- playback was first seen: slightly before (detection lag) or well after — YouTube can spend many
--- seconds loading the song after an ad ends, with the audio indicator still on.
+-- seconds loading the song after an ad ends, and unlabeled bumper ads can follow, with the audio
+-- indicator on throughout.
 plausibleStart :: Double -> Double -> Bool
-plausibleStart seen implied = implied >= seen - 10 && implied <= seen + 45
+plausibleStart seen implied = implied >= seen - 10 && implied <= seen + 60
 
 -- | When to press pause: 3 s before the end, minus the pause call's own latency, plus ad time.
 pauseDeadline :: Double -> Int -> Double -> Double -> Double
