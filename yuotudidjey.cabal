@@ -75,6 +75,7 @@ test-suite spec
     other-modules:
         ActionSpec
         BlindlySpec
+        ChromeSpec
         CodegenSpec
         ExploitSpec
         ExploreSpec

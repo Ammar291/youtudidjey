@@ -21,6 +21,7 @@ data ExploreOpts = ExploreOpts
   , exSkipCodegen :: Bool
   , exBlindly4 :: FilePath
   , exFromRun :: Maybe FilePath
+  , exProfile :: Maybe FilePath
   }
   deriving (Eq, Show)
 
@@ -30,6 +31,7 @@ data ExploitOpts = ExploitOpts
   , xpSolution :: FilePath
   , xpBlindly4 :: FilePath
   , xpMaxPlay :: Maybe Int
+  , xpProfile :: Maybe FilePath
   }
   deriving (Eq, Show)
 
@@ -78,6 +80,7 @@ exploreP =
     <*> switch (long "skip-codegen" <> help "stop after the songs; do not generate solution.py")
     <*> blindly4Opt
     <*> optional (strOption (long "from-run" <> metavar "DIR" <> help "skip the songs; generate solution.py from an existing exploration run"))
+    <*> profileOpt
 
 exploitP :: Parser ExploitOpts
 exploitP =
@@ -87,6 +90,10 @@ exploitP =
     <*> strOption (long "solution" <> metavar "FILE" <> value "generated/solution.py" <> showDefault)
     <*> blindly4Opt
     <*> optional (option auto (long "max-play-seconds" <> metavar "S" <> help "development only: pause after S seconds"))
+    <*> profileOpt
+
+profileOpt :: Parser (Maybe FilePath)
+profileOpt = optional (strOption (long "chrome-profile" <> metavar "DIR" <> help "reuse this persistent Chrome profile (e.g. signed in to YouTube) instead of a fresh one per stage"))
 
 b4P :: Parser B4Opts
 b4P =

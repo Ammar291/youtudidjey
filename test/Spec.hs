@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified ActionSpec
 import qualified BlindlySpec
+import qualified ChromeSpec
 import qualified CodegenSpec
 import qualified ExploitSpec
 import qualified ExploreSpec
@@ -28,6 +29,7 @@ main = hspec $ do
   describe "Yuo.Guard" GuardSpec.spec
   describe "Yuo.Log" LogSpec.spec
   describe "Yuo.Blindly" BlindlySpec.spec
+  describe "Yuo.Chrome" ChromeSpec.spec
   describe "Yuo.Tree" TreeSpec.spec
   describe "Yuo.Observer" ObserverSpec.spec
   describe "Yuo.Process" ProcessSpec.spec

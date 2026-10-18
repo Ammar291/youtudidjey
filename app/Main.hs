@@ -12,6 +12,8 @@ import System.IO (hSetEncoding, stderr, stdout, utf8)
 import Yuo.Blindly
 import Yuo.Cli
 import Yuo.Log
+import System.Environment (setEnv)
+import Yuo.Chrome (persistentProfileVar)
 import Yuo.Codegen (CodegenEnv (..), generateSolution, liveSmoke)
 import Yuo.Codegen.Lint (lintSolution)
 import Yuo.Exploit (ExploitConfig (..), runExploitation)
@@ -47,6 +49,7 @@ proxy o = do
 explore :: ExploreOpts -> IO ()
 explore o = do
   hSetEncoding stdout utf8
+  usePersistentProfile (exProfile o)
   songs <- readSongs (exSongs o)
   when (null songs) (die ("no songs in " <> exSongs o))
   let backend = backendFor (T.pack (exLlm o)) (T.pack (exModel o))
@@ -63,6 +66,7 @@ explore o = do
 exploit :: ExploitOpts -> IO ()
 exploit o = do
   hSetEncoding stdout utf8
+  usePersistentProfile (xpProfile o)
   exists <- doesFileExist (xpSolution o)
   unless exists (die (xpSolution o <> " does not exist: run explore first"))
   violations <- lintSolution (xpSolution o)
@@ -75,3 +79,7 @@ report :: ReportOpts -> IO ()
 report o = do
   writeReport (rpExplore o) (rpExploit o) (rpOut o)
   putStrLn ("report: " <> (rpOut o </> "report.md"))
+
+-- | Every browser session of this process (stages and smoke runs) reuses the given profile.
+usePersistentProfile :: Maybe FilePath -> IO ()
+usePersistentProfile = mapM_ (\dir -> makeAbsolute dir >>= setEnv persistentProfileVar)

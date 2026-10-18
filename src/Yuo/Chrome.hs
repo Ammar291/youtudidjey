@@ -3,11 +3,13 @@ module Yuo.Chrome
   ( ChromeSession (..)
   , withChrome
   , warmUpUrl
+  , profileFor
+  , persistentProfileVar
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (unless, void)
+import Control.Monad (unless, void, when)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson.KeyMap as KM
 import Data.Maybe (isJust, listToMaybe)
@@ -16,13 +18,26 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import System.Directory (createDirectoryIfMissing, makeAbsolute, removeDirectoryRecursive)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Yuo.Blindly
 import Yuo.Match (PlayState (..), playState)
 import Yuo.Tree
 import Yuo.Types
 
-data ChromeSession = ChromeSession {chromePid :: Pid, chromeProfile :: FilePath}
+data ChromeSession = ChromeSession {chromePid :: Pid, chromeProfile :: FilePath, chromeThrowaway :: Bool}
+
+-- | Environment variable naming a persistent profile (e.g. one signed in to YouTube), set by
+-- @--chrome-profile@ so that every stage and smoke run of the process uses it.
+persistentProfileVar :: String
+persistentProfileVar = "YUO_CHROME_PROFILE"
+
+-- | Profile directory for a stage run and whether to delete it afterwards: a fresh throwaway one by
+-- default, or the given persistent one (never deleted).
+profileFor :: Maybe FilePath -> Stage -> String -> (FilePath, Bool)
+profileFor persistent stage stamp = case persistent of
+  Just dir -> (dir, False)
+  Nothing -> (".chrome-profile" </> (T.unpack (stageText stage) <> "-" <> stamp), True)
 
 -- | A short, song-independent video. YouTube only plays videos reached by in-page navigation once
 -- the session's player has been initialised by a full watch-page load (see the design doc).
@@ -35,7 +50,9 @@ withChrome b4 stage = bracket open close
   where
     open = do
       stamp <- formatTime defaultTimeLocale "%Y%m%d-%H%M%S" <$> getZonedTime
-      profile <- makeAbsolute (".chrome-profile" </> (T.unpack (stageText stage) <> "-" <> stamp))
+      persistent <- lookupEnv persistentProfileVar
+      let (dir, throwaway) = profileFor persistent stage stamp
+      profile <- makeAbsolute dir
       createDirectoryIfMissing True profile
       reply <- withInput b4 $ \tok -> runInput b4 ODriver tok (Open warmUpUrl (T.pack profile))
       pid <- either (fail . T.unpack . ("could not open Chrome: " <>) . errorText) pure (reply >>= pidOf)
@@ -44,11 +61,11 @@ withChrome b4 stage = bracket open close
       void (withInput b $ \tok -> runInput b ODriver tok Activate)
       waitFor 30 (pauseIfPlaying b)
       threadDelay 2000000 -- let the single-page app settle before the first song
-      pure (ChromeSession pid profile)
-    close (ChromeSession pid profile) = do
+      pure (ChromeSession pid profile throwaway)
+    close (ChromeSession pid profile throwaway) = do
       let b = withPid pid b4
       closeWindow b pid (3 :: Int)
-      removeWhenReleased (20 :: Int) profile
+      when throwaway (removeWhenReleased (20 :: Int) profile)
     pidOf = \case
       Object o | Just (Number n) <- KM.lookup "pid" o, Just p <- toBoundedInteger n -> Right (Pid p)
       v -> Left (B4Unexpected 0 ("open returned no pid: " <> T.pack (show v)))

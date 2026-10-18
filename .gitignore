@@ -6,3 +6,4 @@ bin/
 generated/__pycache__/
 .superpowers/
 generated/
+.yuo-profile/
