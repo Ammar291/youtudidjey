@@ -9,6 +9,7 @@ module Yuo.Time
   , startWindow
   , resyncTolerance
   , pauseCallLatency
+  , silenceLimit
   ) where
 
 import Data.Char (isDigit)
@@ -85,6 +86,11 @@ resyncTolerance = 10
 -- | The latency of the pause call itself, subtracted from the deadline.
 pauseCallLatency :: Double
 pauseCallLatency = 0.6
+
+-- | Seconds solution.py may go without any event (or blindly4 call) before the watchdog stops it,
+-- unless a confirmed song is playing out.
+silenceLimit :: Int
+silenceLimit = 600
 
 -- | When to press pause: 3 s before the end, minus the pause call's own latency, plus ad time.
 pauseDeadline :: Double -> Int -> Double -> Double -> Double

@@ -8,6 +8,7 @@ module Yuo.Match
   , playState
   , isAdMarker
   , adMarkerTitles
+  , adMarkerQueries
   ) where
 
 import Data.Char (GeneralCategory (NonSpacingMark), generalCategory, isAlphaNum)
@@ -61,3 +62,8 @@ adMarkerTitles = ["Sponsored", "My Ad Center", "Skip", "Skip Ad", "Skip Ads"]
 
 isAdMarker :: Text -> Bool
 isAdMarker = (`elem` adMarkerTitles)
+
+-- | Title searches that find every ad marker: blindly4 matches titles by substring, so a title that
+-- contains another marker ("Skip Ad" contains "Skip") needs no search of its own.
+adMarkerQueries :: [Text]
+adMarkerQueries = [t | t <- adMarkerTitles, not (any (\o -> o /= t && o `T.isInfixOf` t) adMarkerTitles)]

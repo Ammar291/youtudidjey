@@ -8,7 +8,7 @@ module Yuo.Codegen.Contract
 import Data.Text (Text)
 import qualified Data.Text as T
 import Yuo.Match (adMarkerTitles)
-import Yuo.Time (pauseCallLatency, resyncTolerance, startWindow)
+import Yuo.Time (pauseCallLatency, resyncTolerance, silenceLimit, startWindow)
 
 contractText :: Text
 contractText =
@@ -19,11 +19,12 @@ contractText =
     , ""
     , "Behaviour, per song, looping over the list forever (itertools.cycle):"
     , "1. Emit song_assigned BEFORE any blindly4 call for that song."
-    , "2. Search YouTube for the query and open the right video: the song itself (official video/audio or a normal upload), not a mix, playlist, Short, live stream or loop."
-    , "3. Make sure it plays from its beginning; emit playback_started when you see it playing (include \"position\" if known)."
-    , "4. Wait until 3 seconds before the end of the video, then pause it; emit paused with \"duration\" (video length in seconds you used) and \"remaining\" (seconds left by your computation)."
-    , "5. Then the next song. If a song cannot be found or played after a few retries, emit step_error with a \"reason\" and continue with the next song."
+    , "2. Search YouTube for the query and open the right video: the song itself (official video/audio or a normal upload), not a mix, playlist, Short, live stream or loop. If pressing a result is refused (exit 64), try the next good result."
+    , "3. Ads: while an ad runs, press the player's Skip button as soon as it is there and enabled (a button inside movie_player whose identifier starts with skip-button; press it with --expect-description Skip); otherwise wait. Then make sure the song plays from its beginning (press the player's Play (k) button if that is what it shows); emit playback_started when you see the song itself playing (include \"position\" if known)."
+    , "4. Wait until 3 seconds before the end of the video, then pause it; emit paused with \"duration\" (video length in seconds you used) and \"remaining\" (seconds left by your computation). Find the pause control early — at the re-sync 15 s before the deadline — inside the player (find --under <movie_player path> --title Pause --limit 1; with --limit above 1 blindly4 walks the whole tree, which can take seconds on a busy page) and keep that remembered path; at the deadline press the remembered path with --expect-description \"Pause (k)\" and search again only if that press fails."
+    , "5. Then the next song. Bound each search-and-start attempt by wall time (at most 120 s, measured with time.monotonic), make at most 3 attempts per song, and emit step_error with a \"reason\" after each failed attempt. After a step_error, back off before going on (5 s, doubling up to 60 s while failures repeat); if every song of a whole pass through the list failed, exit with a nonzero status."
     , "Exit with status 0 after --max-songs songs."
+    , "Watchdog: the harness stops solution.py after " <> T.pack (show silenceLimit) <> " s without any event and without any blindly4 call (while a song confirmed playing plays out, its length plus 3 minutes)."
     , ""
     , "The browser: Chrome is already open on YouTube; its process id is in the environment variable YUO_CHROME_PID. Never open or close the browser."
     , "blindly4: call it ONLY through the command prefix in the environment variable YUO_B4 (a JSON array of strings): subprocess.run([*prefix, *args], capture_output=True) with args a blindly4 argument list that includes \"--pid\", pid. Decode stdout/stderr as UTF-8. stdout is JSON (XML with --format xml). Exit codes: 0 ok, 64 usage error or refused by the safety guard, 77 accessibility error (target gone, not foreground, ...)."
@@ -57,12 +58,13 @@ fpRulesText =
 driverTimingText :: Text
 driverTimingText =
   T.unlines
-    [ "How the exploration stage's own code decided that the song itself was playing and timed the pause (its calls appear in the trace with origin \"driver\" or \"observer\"):"
+    [ "How the exploration stage's own code decided that the song itself was playing and timed the pause (the timer's calls appear in the trace with origin \"driver\"):"
     , "- Ads: an ad is running while the player (the element with identifier movie_player; search inside it with find --under <its path> --depth 5) contains an element titled exactly " <> orList (map quoted adMarkerTitles) <> ". Unskippable ads show a Pause (k) button and no Skip button, so a Pause (k) button alone does not mean the song is playing: it is playing when Pause (k) is shown and no ad marker is. Short bumper ads (about 5 s) show no marker at all, and after an ad YouTube can take several more seconds to load the song."
     , "- Right after playback was confirmed it hovered the pointer over the centre of the YouTube player (\"hover\" with the player element's frame centre) and then read the player's seek slider; the slider's value text (\"X Minutes Y Seconds of A Minutes B Seconds\") is only up to date right after such a hover — without it the text can be stale, even showing a finished ad."
     , "- It computed start = now − position and deadline = start + duration − 3 s − " <> secs pauseCallLatency <> " (the pause call's own latency), slept until 15 s before the deadline, hovered and read again to re-sync, slept until the deadline, then pressed the pause control."
-    , "- Even right after a hover the text is sometimes stale, so a reading was believed for the start only if it was song-length (duration at least 60 s and within 3 s of the video's length) and the start it implied (now − position) lay between " <> secs early <> " before and " <> secs late <> " after the moment the song was first seen playing with no ad marker. Until a reading was believed it kept taking readings, about every 2–5 s, up to 40 tries. Hover by moving across the player (e.g. 40 px left of its centre, then the centre) and wait about 0.8 s before reading."
-    , "- The re-sync reading 15 s before the deadline moved the pause only if its duration matched and the start it implied agreed with the start in use within " <> secs resyncTolerance <> "; otherwise the earlier estimate was kept."
+    , "- Even right after a hover the text is sometimes stale, so a reading was believed for the start only if it was song-length (duration at least 60 s) and the start it implied (now − position) lay between " <> secs early <> " before and " <> secs late <> " after the moment the song was first seen playing with no ad marker. Until a reading was believed it kept taking readings every 5 s, up to 40. Hover by moving across the player (e.g. 40 px left of its centre, then the centre) and wait about 0.8 s before reading."
+    , "- The re-sync reading 15 s before the deadline moved the pause only if its duration was within 3 s of the duration in use and the start it implied agreed with the start in use within " <> secs resyncTolerance <> "; otherwise the earlier estimate was kept."
+    , "- For solution.py, do better than a fixed anchor: measure that window from the last time an ad marker or an ad-length reading was seen (a reading whose duration is under 60 s or does not match the video's length proves the song has not started yet), and never fall back to the first ad-free moment while readings are still ad-length — keep reading instead, within the attempt's time budget."
     ]
   where
     (early, late) = startWindow

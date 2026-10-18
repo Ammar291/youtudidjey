@@ -4,8 +4,10 @@ import Data.Aeson (Value, (.=))
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
+import qualified Data.Text as T
 import Test.Hspec
 import Yuo.Metrics
+import Yuo.Report (StageData (..), renderReport)
 import Yuo.Songs (Song (..))
 import Yuo.Types
 
@@ -26,6 +28,17 @@ events =
   , ev 300 OSolution SongAssigned 1 []
   , ev 302 OObserver PlayObserved 1 ["start_est" .= (301.5 :: Double), "start_pos" .= (200 :: Int), "ad_s" .= (0 :: Double)]
   ]
+
+-- | First seen with no ad marker at 52; the reading 7 s in places the start at 50 (song began on time).
+readLate :: [Event]
+readLate =
+  [ ev 10 OSolution SongAssigned 0 []
+  , ev 52 OObserver PlayObserved 0 ["observed" .= (52 :: Double), "start_est" .= (50 :: Double), "start_pos" .= (7 :: Int), "ad_s" .= (30 :: Double)]
+  ]
+
+-- | Assigned at 10, 30 s of ads, song started at 50: 40 s latency, 10 s of it not ads.
+withAd :: [Event]
+withAd = [ev 10 OSolution SongAssigned 0 [], ev 50 OObserver PlayObserved 0 ["start_est" .= (50 :: Double), "ad_s" .= (30 :: Double)]]
 
 calls :: [Call]
 calls = [call 11 OLlm "find", call 12 OLlm "press", call 299 OSolution "find", call 301 OSolution "press", call 301.2 OObserver "inspect"]
@@ -50,8 +63,16 @@ mainSpec = do
       map smPauseMargin ms `shouldBe` [Just 3.2, Nothing]
     it "flags a song whose first call came before it was assigned" $
       map smFlags ms `shouldSatisfy` (\fs -> "assigned late" `elem` (fs !! 1) && "assigned late" `notElem` head' fs)
-    it "flags a song that did not start near 0:00" $
-      map smFlags ms `shouldSatisfy` (\fs -> "did not start near 0:00" `elem` (fs !! 1))
+    it "does not judge the start by the position of a reading taken seconds into the song" $
+      map smFlags (songMetrics Exploitation readLate []  []) `shouldBe` [[]]
+    it "measures latency excluding the ad time before the song" $
+      map smLatencyExAds (songMetrics Exploitation withAd [] []) `shouldBe` [Just 10]
+
+  describe "renderReport" $
+    it "compares the stages by latency excluding ad time" $ do
+      let stage s = StageData s "run" withAd [] [] (songMetrics s withAd [] [])
+      renderReport (stage Exploration) (stage Exploitation)
+        `shouldSatisfy` T.isInfixOf "| mean latency excluding ad time (s) | 10.00 | 10.00 |"
 
   describe "a song that never played" $ do
     let gaveUp = [ev 10 ODriver SongAssigned 0 [], ev 60 ODriver SongGaveUp 0 ["reason" .= ("budget" :: Text)], ev 61 ODriver SongAssigned 1 [], ev 65 OObserver PlayObserved 1 []]

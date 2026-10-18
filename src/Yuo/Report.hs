@@ -86,6 +86,7 @@ renderReport ex xp =
     , both "min / max (s)" (\s -> estOr stMin s <> " / " <> estOr stMax s)
     , both "mean latency to first audio with no ad marker (s)" (statOr stMean)
     , both "mean ad time before the song (s)" (orDash . mean . map smAdSecs . played)
+    , both "mean latency excluding ad time (s)" (orDash . mean . mapMaybe smLatencyExAds . played)
     , both "mean blindly4 calls until playback" (originsText . meanCalls smCallsToPlay . played)
     , both "mean blindly4 time until playback (s)" (orDash . mean . map ((/ 1000) . smB4MsToPlay) . played)
     , both "mean LLM calls until playback" (orDash . mean . map (fromIntegral . smLlmCalls) . played)
@@ -158,7 +159,7 @@ renderReport ex xp =
 renderCsv :: [SongMetric] -> Text
 renderCsv ms =
   T.unlines $
-    "stage,seq,song,assigned,latency_s,latency_est_s,ad_s,calls_until_playback,llm_s_until_playback,pause_margin_s,failed,flags"
+    "stage,seq,song,assigned,latency_s,latency_est_s,latency_ex_ads_s,ad_s,calls_until_playback,llm_s_until_playback,pause_margin_s,failed,flags"
       : [ T.intercalate
             ","
             [ stageText (smStage m)
@@ -167,6 +168,7 @@ renderCsv ms =
             , fmt (smAssigned m)
             , maybe "" fmt (smLatency m)
             , maybe "" fmt (smLatencyEst m)
+            , maybe "" fmt (smLatencyExAds m)
             , fmt (smAdSecs m)
             , T.pack (show (sum (M.elems (smCallsToPlay m))))
             , fmt (smLlmMsToPlay m / 1000)

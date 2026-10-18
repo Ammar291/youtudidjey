@@ -1,5 +1,6 @@
 module MatchSpec (spec) where
 
+import qualified Data.Text as T
 import Test.Hspec
 import Yuo.Match
 
@@ -35,3 +36,8 @@ spec = do
     it "recognises ad overlay controls only" $
       map isAdMarker ["Sponsored", "My Ad Center", "Skip", "Skip navigation", "Settings"]
         `shouldBe` [True, True, True, False, False]
+
+  describe "adMarkerQueries" $
+    it "are the fewest title searches that find every ad marker (blindly4's title filter is a substring match)" $ do
+      adMarkerQueries `shouldBe` ["Sponsored", "My Ad Center", "Skip"]
+      mapM_ (\m -> adMarkerQueries `shouldSatisfy` any (`T.isInfixOf` m)) adMarkerTitles

@@ -37,6 +37,7 @@ data SongMetric = SongMetric
   , smAssigned :: Double
   , smLatency :: Maybe Double
   , smLatencyEst :: Maybe Double
+  , smLatencyExAds :: Maybe Double -- ^ latency to actual playback minus the ad time before the song
   , smAdSecs :: Double
   , smCallsToPlay :: M.Map Origin Int
   , smCallsTotal :: M.Map Origin Int
@@ -85,10 +86,10 @@ songMetrics stage events calls llm = zipWith3 metric [0 ..] assigned windowsEnd
           previousStart = if i > 0 then evT <$> listToMaybe (drop (i - 1) assigned) else Nothing
           previousEnd = previousStart >>= \ps -> listToMaybe (reverse [t | t <- endTimes, t >= ps, t < t0])
           early = [c | c <- acting, callOrigin c `elem` [OLlm, OSolution], Just p <- [previousEnd], callStart c > p, callStart c < t0]
-          startPos = played >>= num "start_pos"
-          flags =
-            ["assigned late" | not (null early)]
-              <> ["did not start near 0:00" | maybe False (> 5) startPos]
+          -- A reading's position says when it was taken, not where the song began, so it is no flag.
+          flags = ["assigned late" | not (null early)]
+          adSecs = maybe 0 id (played >>= num "ad_s")
+          latencyEst = (subtract t0) <$> (played >>= num "start_est")
        in SongMetric
             { smStage = stage
             , smSeq = i
@@ -96,8 +97,9 @@ songMetrics stage events calls llm = zipWith3 metric [0 ..] assigned windowsEnd
             , smSong = maybe "" songQuery song
             , smAssigned = t0
             , smLatency = (subtract t0) <$> tPlay
-            , smLatencyEst = (subtract t0) <$> (played >>= num "start_est")
-            , smAdSecs = maybe 0 id (played >>= num "ad_s")
+            , smLatencyEst = latencyEst
+            , smLatencyExAds = subtract adSecs <$> latencyEst
+            , smAdSecs = adSecs
             , smCallsToPlay = countBy toPlay
             , smCallsTotal = countBy [c | c <- acting, inWindow t0 end (callStart c)]
             , smB4MsToPlay = sum (map callMs toPlay)

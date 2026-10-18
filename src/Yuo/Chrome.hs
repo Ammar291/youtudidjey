@@ -1,17 +1,20 @@
 -- | The browser session for one stage: opened, warmed up and closed through blindly4 only.
 module Yuo.Chrome
   ( ChromeSession (..)
+  , EnvironmentNotReady (..)
   , withChrome
+  , warmUp
   , warmUpUrl
   , profileFor
   , persistentProfileVar
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, bracket, try)
+import Control.Exception (Exception, SomeException, bracket, throwIO, try)
 import Control.Monad (unless, void, when)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson.KeyMap as KM
+import Data.Either (isRight)
 import Data.Maybe (isJust, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
@@ -44,6 +47,13 @@ profileFor persistent stage stamp = case persistent of
 warmUpUrl :: Text
 warmUpUrl = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 
+-- | The browser never reached a usable state (not in front, or the page exposes no player): a fault
+-- of the environment, not of whatever was about to run in it.
+newtype EnvironmentNotReady = EnvironmentNotReady Text
+  deriving (Show)
+
+instance Exception EnvironmentNotReady
+
 -- | Fresh isolated profile per stage run; YouTube open, warmed up, paused and in front.
 withChrome :: B4 -> Stage -> (ChromeSession -> IO a) -> IO a
 withChrome b4 stage = bracket open close
@@ -57,11 +67,12 @@ withChrome b4 stage = bracket open close
       reply <- withInput b4 $ \tok -> runInput b4 ODriver tok (Open warmUpUrl (T.pack profile))
       pid <- either (fail . T.unpack . ("could not open Chrome: " <>) . errorText) pure (reply >>= pidOf)
       let b = withPid pid b4
-      waitFor 40 (paneHasYouTube b)
-      void (withInput b $ \tok -> runInput b ODriver tok Activate)
-      waitFor 30 (pauseIfPlaying b)
-      threadDelay 2000000 -- let the single-page app settle before the first song
-      pure (ChromeSession pid profile throwaway)
+          session = ChromeSession pid profile throwaway
+      void (waitFor 40 (paneHasYouTube b))
+      warmUp 30 3000000 b >>= \case
+        Left why -> close session >> throwIO (EnvironmentNotReady why)
+        Right () -> threadDelay 2000000 -- let the single-page app settle before the first song
+      pure session
     close (ChromeSession pid profile throwaway) = do
       let b = withPid pid b4
       closeWindow b pid (3 :: Int)
@@ -69,6 +80,24 @@ withChrome b4 stage = bracket open close
     pidOf = \case
       Object o | Just (Number n) <- KM.lookup "pid" o, Just p <- toBoundedInteger n -> Right (Pid p)
       v -> Left (B4Unexpected 0 ("open returned no pid: " <> T.pack (show v)))
+
+-- | Brings Chrome to the front and waits (up to @tries@ half-second polls) for the paused player.
+-- A background window exposes no page tree, so a failed activation is retried after @settleUs@; a
+-- missing player gets a reload (F5) and @settleUs@ to load. At most two retries.
+warmUp :: Int -> Int -> B4 -> IO (Either Text ())
+warmUp tries settleUs b = attempt (2 :: Int)
+  where
+    attempt retries = do
+      activated <- isRight <$> withInput b (\tok -> runInput b ODriver tok Activate)
+      ready <- if activated then waitFor tries (pauseIfPlaying b) else pure False
+      case (activated, ready) of
+        (True, True) -> pure (Right ())
+        _ | retries <= 0 -> pure (Left (if activated then "the YouTube player never appeared in the accessibility tree" else "Chrome could not be brought to the front"))
+        (True, False) -> do
+          void (withInput b (\tok -> runInput b ODriver tok (Key "f5" Nothing)))
+          threadDelay settleUs
+          attempt (retries - 1)
+        (False, _) -> threadDelay settleUs >> attempt (retries - 1)
 
 nodes :: B4 -> Command 'ReadOnly -> IO [Node]
 nodes b cmd = either (const []) id . (>>= either (Left . B4Unexpected 0) Right . parseMatches) <$> runRead b ODriver cmd
@@ -95,7 +124,7 @@ closeWindow b pid tries = do
     void (try (withInput b $ \tok -> case button of
       n : _ -> runInput b ODriver tok (Press (nPath n) "Close")
       [] -> runInput b ODriver tok Activate >> runInput b ODriver tok (Key "alt+f4" Nothing)) :: IO (Either SomeException (Either B4Error Value)))
-    waitFor 10 (not <$> listed b pid)
+    void (waitFor 10 (not <$> listed b pid))
     closeWindow b pid (tries - 1)
 
 -- | Chrome's helper processes keep profile files open briefly after the window closes.
@@ -121,8 +150,8 @@ listed b (Pid p) =
       Object a | Just (Number m) <- KM.lookup "pid" a -> toBoundedInteger m == Just n
       _ -> False
 
--- | Polls every half second, at most @tries@ times.
-waitFor :: Int -> IO Bool -> IO ()
+-- | Polls every half second, at most @tries@ times; whether the check passed.
+waitFor :: Int -> IO Bool -> IO Bool
 waitFor tries check
-  | tries <= 0 = pure ()
-  | otherwise = check >>= \ok -> if ok then pure () else threadDelay 500000 >> waitFor (tries - 1) check
+  | tries <= 0 = pure False
+  | otherwise = check >>= \ok -> if ok then pure True else threadDelay 500000 >> waitFor (tries - 1) check

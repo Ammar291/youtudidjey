@@ -2,6 +2,7 @@
 -- with the lint and a real smoke run, repairing up to three times.
 module Yuo.Codegen
   ( CodegenEnv (..)
+  , SmokeFailure (..)
   , generateSolution
   , liveSmoke
   , condensedTraces
@@ -20,7 +21,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import Yuo.Codegen.Contract
 import Yuo.Codegen.Lint (lintSolution)
-import Yuo.Exploit (SolutionRun (..), runSolution)
+import Yuo.Exploit (SolutionRun (..), freshDirectory, runSolution)
 import Yuo.Llm
 import Yuo.Log
 import Yuo.Songs (Song (..))
@@ -34,8 +35,13 @@ data CodegenEnv = CodegenEnv
   , cgBlindly4 :: FilePath
   , cgOut :: FilePath
   , cgSchema :: Text
-  , cgSmoke :: Int -> FilePath -> IO (Either Text ()) -- ^ attempt number, candidate file
+  , cgSmoke :: Int -> FilePath -> IO (Either SmokeFailure ()) -- ^ attempt number, candidate file
   }
+
+-- | Why a smoke run did not pass: the candidate's own behaviour, or a browser that never became
+-- usable (which says nothing about the candidate).
+data SmokeFailure = CandidateFailed Text | EnvironmentFailed Text
+  deriving (Eq, Show)
 
 -- | Writing a whole program takes minutes, not seconds.
 codegenAsk :: AskConfig
@@ -106,10 +112,12 @@ codeOf = \case
   _ -> Left "reply has no code"
 
 -- | Passes when the candidate exits 0, reports song 0 playing and paused, and the observer agrees.
--- @liveSmoke runDir songs blindly4 attempt candidate@ plays song 0 for 20 s with the candidate.
-liveSmoke :: FilePath -> FilePath -> FilePath -> Int -> FilePath -> IO (Either Text ())
+-- @liveSmoke runDir songs blindly4 attempt candidate@ plays song 0 for 20 s with the candidate, in a
+-- directory emptied first so that no earlier codegen round's events can count.
+liveSmoke :: FilePath -> FilePath -> FilePath -> Int -> FilePath -> IO (Either SmokeFailure ())
 liveSmoke runDir songs blindly4 n candidate = do
   let dir = runDir </> ("smoke-" <> show n)
+  freshDirectory dir
   (code, stderrTail) <- runSolution (SolutionRun Exploration dir candidate songs ["--max-songs", "1", "--max-play-seconds", "20"] blindly4 240)
   events <- jsonLines (dir </> "events.jsonl") :: IO [Event]
   calls <- jsonLines (dir </> "blindly4.jsonl") :: IO [Call]
@@ -123,10 +131,11 @@ liveSmoke runDir songs blindly4 n candidate = do
       lastCalls = T.unlines (map renderCall (drop (length solutionCalls - 25) solutionCalls))
       solutionCalls = [c | c <- calls, callOrigin c == OSolution]
       eventLines = T.unlines [encodeLine e | e <- events]
-  pure $
-    if null missing
-      then Right ()
-      else Left (T.unlines (missing <> ["failing blindly4 calls by solution.py:", failing, "stderr (tail):", stderrTail, "last blindly4 calls by solution.py:", lastCalls, "events:", eventLines]))
+  pure $ case () of
+    _
+      | code == 5 -> Left (EnvironmentFailed (T.unlines [encodeLine e | e <- events, evKind e == StepError]))
+      | null missing -> Right ()
+      | otherwise -> Left (CandidateFailed (T.unlines (missing <> ["failing blindly4 calls by solution.py:", failing, "stderr (tail):", stderrTail, "last blindly4 calls by solution.py:", lastCalls, "events:", eventLines])))
 
 -- | Writes cgOut; Right path once it passes lint and smoke, Left after three failed repairs.
 generateSolution :: CodegenEnv -> IO (Either Text FilePath)
@@ -144,12 +153,21 @@ generateSolution env = do
           if not (null violations)
             then retry n code (T.unlines ("lint violations:" : violations))
             else
-              cgSmoke env n candidate >>= \case
+              smoke n candidate (3 :: Int) >>= \case
                 Right () -> do
                   createDirectoryIfMissing True (takeDirectory (cgOut env))
                   copyFile candidate (cgOut env)
                   pure (Right (cgOut env))
-                Left problems -> retry n code (T.unlines ["smoke run failed:", problems])
+                Left (CandidateFailed problems) -> retry n code (T.unlines ["smoke run failed:", problems])
+                Left (EnvironmentFailed why) -> pure (Left ("the browser environment was not ready for the smoke run (not the candidate's fault): " <> why))
+      -- An unready browser says nothing about the candidate: run its smoke test again.
+      smoke n candidate tries =
+        cgSmoke env n candidate >>= \case
+          Left (EnvironmentFailed why) | tries > 1 -> do
+            t <- nowPosix
+            logEvent (cgLogger env) (Event t Exploration ODriver StepError Nothing (KM.fromList [("reason", String "smoke run: environment not ready, running it again"), ("problems", String why)]))
+            smoke n candidate (tries - 1)
+          result -> pure result
       retry n code problems
         | n >= (3 :: Int) = pure (Left problems)
         | otherwise = do

@@ -288,7 +288,7 @@ awaitingProbe b4 player cache song = do
           -- The next ad of a pod shows "My Ad Center" or "Skip" before its "Sponsored" label renders.
           (ads, sliders) <-
             concurrently
-              (concat <$> mapConcurrently (\marker -> obs b4 (Find findQ {fqTitle = Just marker, fqUnder = Just mp, fqDepth = 5})) ["Sponsored", "My Ad Center", "Skip"])
+              (concat <$> mapConcurrently (\marker -> obs b4 (Find findQ {fqTitle = Just marker, fqUnder = Just mp, fqDepth = 5})) adMarkerQueries)
               (obs b4 (Find findQ {fqRole = Just "AXSlider", fqTitle = Just "Seek slider", fqUnder = Just mp, fqDepth = 6}))
           pure (probeFromNodes t pane addr (ns <> ads <> sliders))
     else pure (probeFromNodes t pane Nothing [])
