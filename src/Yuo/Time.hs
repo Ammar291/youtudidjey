@@ -5,6 +5,7 @@ module Yuo.Time
   , renderProgress
   , parseResultDuration
   , pauseDeadline
+  , plausibleStart
   ) where
 
 import Data.Char (isDigit)
@@ -59,6 +60,12 @@ parseResultDuration t = case trailing (reverse (T.words t)) of
     trailing (u : n : rest)
       | Just s <- unitSeconds u, Just k <- readNat n = k * s : trailing rest
     trailing _ = []
+
+-- | Where a song's own start (time − position of a fresh reading) may fall relative to the moment
+-- playback was first seen: slightly before (detection lag) or well after — YouTube can spend many
+-- seconds loading the song after an ad ends, with the audio indicator still on.
+plausibleStart :: Double -> Double -> Bool
+plausibleStart seen implied = implied >= seen - 10 && implied <= seen + 45
 
 -- | When to press pause: 3 s before the end, minus the pause call's own latency, plus ad time.
 pauseDeadline :: Double -> Int -> Double -> Double -> Double

@@ -1,7 +1,7 @@
 module PauseSpec (spec) where
 
 import Test.Hspec
-import Yuo.Pause (acceptResync, acceptStart)
+import Yuo.Pause (acceptResync, acceptStart, plannedDuration)
 import Yuo.Time (Progress (..))
 
 spec :: Spec
@@ -13,6 +13,16 @@ spec = do
       acceptStart 60 249 (76, Progress 1 15) `shouldBe` Nothing
     it "ignores a reading whose position contradicts the observed start" $
       acceptStart 60 249 (76, Progress 200 247) `shouldBe` Nothing
+    it "accepts a song that began loading several seconds after the ad ended, overriding an ad-length plan" $
+      acceptStart 53.8 5 (74.2, Progress 9 247) `shouldBe` Just (65.2, 247)
+    it "rejects a start implausibly long after playback was seen" $
+      acceptStart 60 249 (200, Progress 10 247) `shouldBe` Nothing
+
+  describe "plannedDuration" $ do
+    it "trusts a song-length plan" $
+      plannedDuration 249 `shouldBe` Just 249
+    it "never trusts an ad-length plan" $
+      plannedDuration 5 `shouldBe` Nothing
 
   describe "acceptResync (the reading 15 s before the deadline)" $ do
     it "corrects a few seconds of drift" $

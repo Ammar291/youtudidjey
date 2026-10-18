@@ -9,17 +9,19 @@ module Yuo.Observer
   , stepObserver
   , assign
   , pausedAt
+  , refineStart
+  , hoverReading
   , probeFromNodes
   , Observer (..)
   , withObserver
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (myThreadId, throwTo)
+import Control.Concurrent (myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (concurrently, link, mapConcurrently, withAsync)
 import Control.Exception (catch)
 import Control.Concurrent.STM
-import Control.Monad (forM_, forever)
+import Control.Monad (forM_, forever, void)
 import Data.Aeson (Value (..), (.=))
 import qualified Data.Aeson.KeyMap as KM
 import Data.Maybe (listToMaybe, mapMaybe)
@@ -117,6 +119,17 @@ stepObserver st p = case st of
             _ -> prAt p
        in PlayInfo song assigned (prAt p) startEst (posSec <$> trusted) (durSec <$> trusted) ads
 
+-- | A fresh reading (taken just after playback was seen) pins down when the song itself began:
+-- YouTube may spend seconds loading it after an ad ends. Ad-length sliders, a song that has not
+-- moved yet (position 0) and implausible starts leave the estimate unchanged.
+refineStart :: PlayInfo -> (Double, Progress) -> PlayInfo
+refineStart info (t, Progress pos d)
+  | d >= 60 && pos >= 1 && plausibleStart (piObserved info) implied =
+      info {piStartEst = implied, piStartPos = Just pos, piDuration = Just d}
+  | otherwise = info
+  where
+    implied = t - fromIntegral pos
+
 assign :: Song -> Double -> ObsState -> ObsState
 assign song t _ = Awaiting song t 0 Nothing
 
@@ -172,11 +185,43 @@ withObserver b4 stage act = do
               writeTVar state s'
               forM_ [i | OutPlay i <- outs] (writeTVar latest . Just)
               pure outs
-        mapM_ (logOut b4 stage) outs
+        mapM refined outs >>= mapM_ (logOut b4 stage)
+      -- One hover reading (a pointer move, no click) right after playback is seen, so the
+      -- measurement ends when the song itself started, not when the ad's markers vanished.
+      refined = \case
+        OutPlay i -> do
+          i' <- refineWithHover b4 player i
+          atomically $
+            readTVar state >>= \case
+              Watching x | x == i -> writeTVar state (Watching i') >> writeTVar latest (Just i')
+              _ -> pure ()
+          pure (OutPlay i')
+        other -> pure other
   -- The observer is usually the first to see a closed browser: hand ChromeGone to the stage as is
   -- (link would wrap it in ExceptionInLinkedThread and the stage's handler would miss it).
   parent <- myThreadId
   withAsync (loop `catch` \(gone :: ChromeGone) -> throwTo parent gone) $ \a -> link a >> act observer
+
+-- | Hover across the player so YouTube refreshes its slider text, then read it.
+hoverReading :: B4 -> Origin -> Node -> IO (Maybe (Double, Progress))
+hoverReading b4 origin player = case nCenter player of
+  Nothing -> pure Nothing
+  Just (x, y) -> do
+    void (withInput b4 $ \tok -> runInput b4 origin tok Activate >> runInput b4 origin tok (Hover (x - 40) y) >> runInput b4 origin tok (Hover x y))
+    threadDelay 800000
+    sliders <- either (const []) id . (>>= either (Left . B4Unexpected 0) Right . parseMatches) <$> runRead b4 origin (Find findQ {fqRole = Just "AXSlider", fqTitle = Just "Seek slider", fqUnder = Just (nPath player), fqDepth = 6})
+    t <- nowPosix
+    pure ((t,) <$> (listToMaybe sliders >>= nValue >>= parseProgress))
+
+-- | Up to three readings, two seconds apart, until one refines the start.
+refineWithHover :: B4 -> TVar (Maybe Node) -> PlayInfo -> IO PlayInfo
+refineWithHover b4 player = go (3 :: Int)
+  where
+    go n info = do
+      threadDelay 2000000
+      reading <- readTVarIO player >>= maybe (pure Nothing) (hoverReading b4 OObserver)
+      let info' = maybe info (refineStart info) reading
+      if info' /= info || n <= 1 then pure info' else go (n - 1) info
 
 obs :: B4 -> Command 'ReadOnly -> IO [Node]
 obs b4 cmd = either (const []) id . (>>= either (Left . B4Unexpected 0) Right . parseMatches) <$> runRead b4 OObserver cmd

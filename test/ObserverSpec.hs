@@ -12,6 +12,7 @@ import Yuo.Blindly (Backend (..), ChromeGone (..), newB4)
 import Yuo.Log (withLogger)
 import Yuo.Observer
 import Yuo.Songs (Song (..))
+import Yuo.Time (Progress (..))
 import Yuo.Tree
 import Yuo.Types (Path (..), Pid (..), Stage (..))
 
@@ -43,7 +44,7 @@ plays :: [ObsOut] -> [PlayInfo]
 plays outs = [p | OutPlay p <- outs]
 
 spec :: Spec
-spec = observerLoopSpec >> adMarkerSpec >> stepSpec
+spec = observerLoopSpec >> adMarkerSpec >> refineSpec >> stepSpec
 
 stepSpec :: Spec
 stepSpec = describe "stepObserver" $ do
@@ -134,3 +135,15 @@ adMarkerSpec = describe "withObserver ad detection" $ do
       b <- newB4 (fakeWatchPage []) (Just (Pid 7)) lg Exploration
       seen <- withObserver b Exploration $ \o -> obsAssign o lucky 0 >> threadDelay 2500000 >> atomically (obsPlayInfo o)
       fmap (songQuery . piSong) seen `shouldBe` Just "Daft Punk Get Lucky"
+
+refineSpec :: Spec
+refineSpec = describe "refineStart" $ do
+  let seen = PlayInfo lucky 0 53.8 53.8 Nothing Nothing 14.6
+  it "moves the start to when the song itself began, from a fresh reading" $ do
+    let r = refineStart seen (74.2, Progress 9 247)
+    (piStartEst r, piDuration r, piStartPos r) `shouldBe` (65.2, Just 247, Just 9)
+    piObserved r `shouldBe` 53.8
+  it "ignores the slider left over from an ad" $
+    refineStart seen (74.2, Progress 2 5) `shouldBe` seen
+  it "ignores a reading that would put the start before the ad ended" $
+    refineStart seen (74.2, Progress 60 247) `shouldBe` seen

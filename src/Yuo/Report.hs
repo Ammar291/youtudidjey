@@ -73,7 +73,7 @@ renderReport ex xp =
     , "- Exploration run: `" <> T.pack (sdDir ex) <> "`"
     , "- Exploitation run: `" <> T.pack (sdDir xp) <> "`"
     , ""
-    , "**Latency** = time from a song being assigned to the independent, read-only observer confirming that song itself audibly playing (no ad on screen). The same observer measured both stages. *Estimated* latency subtracts the position read from a fresh song-length slider value, when one was available."
+    , "**Latency to actual playback** = time from a song being assigned to the moment the song itself started. The independent observer (the same instrument in both stages) first sees the assigned song's page audibly playing with no ad marker, then — with one pointer hover over the player, never a click — reads the player's position and back-dates the start (YouTube can spend several seconds loading the song after an ad). When no fresh reading was possible, the first moment is used. *First audio with no ad marker* is that first moment alone."
     , ""
     , "## Summary"
     , ""
@@ -81,10 +81,10 @@ renderReport ex xp =
     , row ["---", "---", "---"]
     , both "songs assigned" (T.pack . show . length . sdMetrics)
     , both "played / failed" (\s -> let ms = sdMetrics s in T.pack (show (length (filter (not . smFailed) ms))) <> " / " <> T.pack (show (length (filter smFailed ms))))
-    , both "**mean latency (s)**" (\s -> "**" <> statOr stMean s <> "**")
-    , both "median / p90 latency (s)" (\s -> statOr stMedian s <> " / " <> statOr stP90 s)
-    , both "min / max latency (s)" (\s -> statOr stMin s <> " / " <> statOr stMax s)
-    , both "mean estimated latency (s)" (orDash . mean . mapMaybe smLatencyEst . played)
+    , both "**mean latency to actual playback (s)**" (\s -> "**" <> estOr stMean s <> "**")
+    , both "median / p90 (s)" (\s -> estOr stMedian s <> " / " <> estOr stP90 s)
+    , both "min / max (s)" (\s -> estOr stMin s <> " / " <> estOr stMax s)
+    , both "mean latency to first audio with no ad marker (s)" (statOr stMean)
     , both "mean ad time before the song (s)" (orDash . mean . map smAdSecs . played)
     , both "mean blindly4 calls until playback" (originsText . meanCalls smCallsToPlay . played)
     , both "mean blindly4 time until playback (s)" (orDash . mean . map ((/ 1000) . smB4MsToPlay) . played)
@@ -120,6 +120,7 @@ renderReport ex xp =
   where
     played s = filter (not . smFailed) (sdMetrics s)
     statOr f s = let st = latencyStats (sdMetrics s) in if stN st == 0 then "–" else fmt (f st)
+    estOr f s = let st = stats (mapMaybe smLatencyEst (sdMetrics s)) in if stN st == 0 then "–" else fmt (f st)
     both label f = row [label, f ex, f xp]
     songRow m =
       row
