@@ -232,13 +232,15 @@ exploit opts = do
 -- silence it terminates solution.py and gives up.
 answer :: ProcessHandle -> Handle -> Handle -> IO (String, UTCTime)
 answer process out transcript = do
-  (line, silent) <- withDeadline silenceDeadline process $ hIsEOF out >>= \eof -> if eof then pure Nothing else Just <$> hGetLine out
+  (line, silent) <- withDeadline silenceDeadline process readWord
   now <- getCurrentTime
   case line of
     Just word | not silent -> do
       hPutStrLn transcript (formatTime defaultTimeLocale "%FT%T%3QZ " now <> trim word)
       pure (trim word, now)
     _ -> die (if silent then "solution.py stopped answering" else "solution.py exited")
+  where
+    readWord = hIsEOF out >>= \eof -> if eof then pure Nothing else Just <$> hGetLine out
 
 expect :: String -> (String, UTCTime) -> IO ()
 expect wanted (word, _) = unless (word == wanted) (die ("solution.py said " <> show word <> ", expected " <> wanted))

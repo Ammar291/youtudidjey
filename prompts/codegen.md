@@ -39,9 +39,9 @@ Diagnostics go to stderr.
   ad or buffering moved the end. A reading is fresh only right after the pointer **moved** over the
   player: alternate the hover between two points, never the same point twice in a row. If readings
   still don't advance, fall back to the time elapsed since the song started playing. Bound the re-read
-  too: if no fresh reading with the song's length arrives before the pause time computed from the
-  previous reading (an ad may be playing), press Pause at that time anyway, falling back to the
-  elapsed-time estimate; never wait past it for an ad to end. Press Pause by query, not by path:
+  too: while an ad is on the player, keep looking for a fresh reading with the song's length, but no
+  longer than about 90 s past the pause time computed from the previous reading. After that, press
+  Pause anyway, falling back to the elapsed-time estimate. Press Pause by query, not by path:
   `press --under PLAYER --role button --title Pause --expect-description Pause`, optionally with
   `--at T`.
 - **Functional style**: a pure core (parsing outputs, choosing a result, computing deadlines) separate
