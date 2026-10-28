@@ -1,9 +1,9 @@
 dist-newstyle/
-.chrome-profile/
-logs/
-tools/
 bin/
-generated/__pycache__/
-.superpowers/
-generated/
+runs/
+.chrome-profile/
 .yuo-profile/
+.superpowers/
+logs/
+generated/
+tools/

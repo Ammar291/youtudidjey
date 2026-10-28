@@ -1,85 +1,257 @@
+-- | youtudidjey orchestrates the two stages of a YouTube DJ and measures them. It never touches the
+-- browser itself:
+--
+-- * @explore@: an agent (@claude -p@) drives Chrome through blindly4, one turn per song, then writes
+--   @solution.py@. Its prompts are the files in @prompts/@; its tools are the flags in 'agentTurn'.
+-- * @exploit@: @solution.py@ does the same job with no LLM, cycling through the songs forever.
+--
+-- Both actors answer with the words READY, PLAYING, PAUSED (or SKIPPED). youtudidjey times each song
+-- from assigning it to PLAYING. blindly4 logs every call it serves to the run's @blindly4.jsonl@.
 module Main (main) where
 
-import qualified Data.ByteString as BS
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import Options.Applicative (execParser)
-import System.Exit (ExitCode (..), die, exitWith)
-import Control.Monad (unless, when)
-import System.Directory (doesFileExist, makeAbsolute)
-import System.FilePath ((</>))
-import System.IO (hSetEncoding, stderr, stdout, utf8)
-import Yuo.Blindly
-import Yuo.Cli
-import Yuo.Log
-import System.Environment (setEnv)
-import Yuo.Chrome (persistentProfileVar)
-import Yuo.Codegen (CodegenEnv (..), generateSolution, liveSmoke)
-import Yuo.Codegen.Lint (lintSolution)
-import Yuo.Exploit (ExploitConfig (..), runExploitation)
-import Yuo.Report (writeReport)
-import Yuo.Explore
-import Yuo.Explore.Prompt (schemaDoc)
-import Yuo.Llm (backendFor)
-import Yuo.Songs (readSongs)
-import Yuo.Types
+import Control.Applicative ((<|>))
+import Control.Monad (forM_, guard, unless, void)
+import Data.Aeson (Value (..), decodeStrict, encode, object, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (parseMaybe)
+import Data.ByteString.Char8 qualified as B
+import Data.ByteString.Lazy.Char8 qualified as BL
+import Data.Char (toUpper)
+import Data.List (intercalate, partition, sort)
+import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Text qualified as T
+import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime, getZonedTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import GHC.IO.Encoding (setLocaleEncoding)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getCurrentDirectory)
+import System.Environment (getArgs, getEnvironment)
+import System.Exit (die)
+import System.FilePath (searchPathSeparator, takeFileName, (</>))
+import System.IO
+import System.Process
+import System.Timeout (timeout)
+import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 main :: IO ()
 main = do
-  hSetEncoding stderr utf8
-  execParser commandInfo >>= \case
-    Proxy o -> proxy o >>= exitWith
-    Explore o -> explore o
-    Exploit o -> exploit o
-    Report o -> report o
+  setLocaleEncoding utf8
+  hSetBuffering stdout LineBuffering
+  getArgs >>= \case
+    "explore" : opts -> explore opts
+    "exploit" : opts -> exploit opts
+    "report" : dirs@(_ : _) -> report dirs
+    _ -> die usage
 
--- | @yuotudidjey b4 … -- ARGS@: guard, log and pass one blindly4 call through for solution.py.
-proxy :: B4Opts -> IO ExitCode
-proxy o = do
-  stage <- maybe (die "bad --stage") pure (parseStage (T.pack (b4StageName o)))
-  origin <- maybe (die "bad --origin") pure (parseOrigin (T.pack (b4OriginName o)))
-  (code, out, err) <- withLogger (b4RunDir o) $ \logger -> do
-    b4 <- newB4 (processBackend (b4Exe o)) (Pid <$> b4SessionPid o) logger stage
-    runRawArgv b4 origin (map T.pack (b4Args o))
-  BS.hPut stdout (TE.encodeUtf8 out)
-  BS.hPut stderr (TE.encodeUtf8 err)
-  pure (if code == 0 then ExitSuccess else ExitFailure code)
+usage :: String
+usage =
+  "usage: youtudidjey explore [--songs FILE] [--max-songs N] [--model MODEL]\n\
+  \       youtudidjey exploit [--songs FILE] [--max-songs N] [--solution FILE]\n\
+  \       youtudidjey report RUN_DIR..."
 
--- | Exploration stage: LLM-driven songs, then (Task 10) code generation.
-explore :: ExploreOpts -> IO ()
-explore o = do
-  hSetEncoding stdout utf8
-  usePersistentProfile (exProfile o)
-  songs <- readSongs (exSongs o)
-  when (null songs) (die ("no songs in " <> exSongs o))
-  let backend = backendFor (T.pack (exLlm o)) (T.pack (exModel o))
-  dir <- maybe (runExploration (ExploreConfig songs (exMaxSongs o) backend (exMaxPlay o) (exBlindly4 o))) makeAbsolute (exFromRun o)
-  putStrLn ("exploration run: " <> dir)
-  unless (exSkipCodegen o) $ withLogger dir $ \logger -> do
-    b <- newB4 (processBackend (exBlindly4 o)) Nothing logger Exploration
-    schema <- either (const "") schemaDoc <$> runRead b ODriver Schema
-    let writer = backendFor (T.pack (exLlm o)) (T.pack (exCodegenModel o))
-    generated <- generateSolution (CodegenEnv logger writer dir (exSongs o) (exBlindly4 o) "generated/solution.py" schema (liveSmoke dir (exSongs o) (exBlindly4 o)))
-    either (\e -> die ("no solution.py was installed:\n" <> T.unpack e)) (\p -> putStrLn ("solution.py: " <> p)) generated
+-- | The value after @--name@, if given.
+option :: String -> [String] -> Maybe String
+option name = \case
+  k : v : rest -> if k == "--" <> name then Just v else option name (v : rest)
+  _ -> Nothing
 
--- | Exploitation stage: the generated solution.py alone, with no LLM reachable.
-exploit :: ExploitOpts -> IO ()
-exploit o = do
-  hSetEncoding stdout utf8
-  usePersistentProfile (xpProfile o)
-  exists <- doesFileExist (xpSolution o)
-  unless exists (die (xpSolution o <> " does not exist: run explore first"))
-  violations <- lintSolution (xpSolution o)
-  unless (null violations) (die ("refusing to run a solution.py that fails the lint:\n" <> T.unpack (T.unlines violations)))
-  (dir, code) <- runExploitation (ExploitConfig (xpSongs o) (xpMaxSongs o) (xpSolution o) (xpBlindly4 o) (xpMaxPlay o))
-  putStrLn ("exploitation run: " <> dir)
-  exitWith (if code == 0 then ExitSuccess else ExitFailure code)
+readSongs :: [String] -> IO [String]
+readSongs opts = filter (not . null) . map trim . lines <$> readFile (fromMaybe "songs.txt" (option "songs" opts))
 
-report :: ReportOpts -> IO ()
-report o = do
-  writeReport (rpExplore o) (rpExploit o) (rpOut o)
-  putStrLn ("report: " <> (rpOut o </> "report.md"))
+maxSongs :: [String] -> Maybe Int
+maxSongs opts = option "max-songs" opts >>= readMaybe
 
--- | Every browser session of this process (stages and smoke runs) reuses the given profile.
-usePersistentProfile :: Maybe FilePath -> IO ()
-usePersistentProfile = mapM_ (\dir -> makeAbsolute dir >>= setEnv persistentProfileVar)
+trim :: String -> String
+trim = T.unpack . T.strip . T.filter (/= '\xFEFF') . T.pack
+
+-- * Runs
+
+-- | A run's directory, and the environment every actor gets: blindly4 on PATH, logging into the run.
+data Run = Run {folder :: FilePath, vars :: [(String, String)], chromeProfile :: FilePath}
+
+newRun :: String -> IO Run
+newRun stage = do
+  root <- getCurrentDirectory
+  stamp <- formatTime defaultTimeLocale "%Y%m%d-%H%M%S" <$> getZonedTime
+  let runDir = root </> "runs" </> (stage <> "-" <> stamp)
+  createDirectoryIfMissing True runDir
+  writeFile (runDir </> "latency.csv") "n,assigned,playing,done,latency_s,song\n"
+  (paths, rest) <- partition ((== "PATH") . map toUpper . fst) <$> getEnvironment
+  let path = intercalate [searchPathSeparator] ((root </> "blindly4" </> ".build" </> "windows") : map snd paths)
+      logging = [("BLINDLY4_LOG", runDir </> "blindly4.jsonl"), ("BLINDLY4_LOG_TAG", stage)]
+  putStrLn ("run: " <> runDir)
+  -- Forward slashes: the agent's shell (Git Bash) would eat backslashes.
+  pure (Run runDir (("PATH", path) : logging <> rest) (map (\c -> if c == '\\' then '/' else c) (root </> ".chrome-profile")))
+
+-- | Appends a song to latency.csv (times in Unix seconds) and prints it.
+record :: Run -> Int -> String -> UTCTime -> Maybe UTCTime -> UTCTime -> IO ()
+record run n song assigned playing done = do
+  let secs t = printf "%.3f" (realToFrac (utcTimeToPOSIXSeconds t) :: Double)
+      latency = maybe "" (printf "%.3f" . since assigned) playing
+  appendFile (folder run </> "latency.csv") (intercalate "," [show n, secs assigned, maybe "" secs playing, secs done, latency, song] <> "\n")
+  putStrLn (printf "%d. %s: " n song <> maybe "not played" (printf "playing after %.1f s" . since assigned) playing)
+
+since :: UTCTime -> UTCTime -> Double
+since t0 t1 = realToFrac (diffUTCTime t1 t0)
+
+-- * Exploration: the agent plays the songs, then writes solution.py
+
+explore :: [String] -> IO ()
+explore opts = do
+  run <- newRun "explore"
+  songs <- take (fromMaybe 10 (maxSongs opts)) <$> readSongs opts
+  copyFile ("prompts" </> "explore.md") (folder run </> "system-prompt.md")
+  [setup, song, codegen] <- mapM (readFile . ("prompts" </>)) ["setup.md", "song.md", "codegen.md"]
+  let fill = substitute [("profile", chromeProfile run), ("solution", folder run </> "solution.py"), ("total", show (length songs))]
+      turn = agentTurn run (fromMaybe "sonnet" (option "model" opts))
+  void (turn "setup" False False (fill setup))
+  forM_ (zip [1 :: Int ..] songs) $ \(n, query) -> do
+    assigned <- getCurrentTime
+    playing <- turn ("song " <> show n) True False (substitute [("n", show n), ("song", query)] (fill song))
+    record run n query assigned playing =<< getCurrentTime
+  void (turn "codegen" True True (fill codegen))
+  generated <- doesFileExist (folder run </> "solution.py")
+  unless generated (die "the agent did not write solution.py")
+  copyFile (folder run </> "solution.py") "solution.py"
+  putStrLn ("wrote solution.py; logs in " <> folder run)
+
+-- | Replaces each @{{key}}@ in a prompt template.
+substitute :: [(String, String)] -> String -> String
+substitute pairs template = T.unpack (foldr (\(k, v) -> T.replace (T.pack ("{{" <> k <> "}}")) (T.pack v)) (T.pack template) pairs)
+
+-- | One turn of the run's conversation with @claude -p@, in the run directory. In Bash the agent can
+-- run only blindly4, sleep and date; in the codegen turn it may also write and test solution.py. Every
+-- line it streams goes to agent.jsonl, after a header with the exact command line. Returns when the
+-- agent said PLAYING, if it did.
+agentTurn :: Run -> String -> String -> Bool -> Bool -> String -> IO (Maybe UTCTime)
+agentTurn run model name continue codegen prompt = do
+  claude <- claudeExe
+  let tools = if codegen then "Bash,Read,Edit,Write" else "Bash"
+      allowed =
+        ["Bash(blindly4 *)", "Bash(sleep *)", "Bash(date *)"]
+          <> if codegen then ["Read", "Edit(solution.py)", "Bash(python -X utf8 solution.py *)"] else []
+      args =
+        ["-p", prompt, "--model", model, "--append-system-prompt-file", "system-prompt.md"]
+          <> ["--tools", tools, "--allowedTools"] <> allowed <> ["--permission-mode", "dontAsk"]
+          <> ["--safe-mode", "--strict-mcp-config", "--output-format", "stream-json", "--verbose"]
+          <> ["--continue" | continue]
+  putStrLn ("agent: " <> name)
+  withFile (folder run </> "agent.jsonl") AppendMode $ \transcript -> do
+    hSetBuffering transcript LineBuffering
+    BL.hPutStrLn transcript (encode (object ["youtudidjey" .= object ["turn" .= name, "argv" .= (claude : args)]]))
+    let spec = (proc claude args) {cwd = Just (folder run), env = Just (vars run), std_in = NoStream, std_out = CreatePipe}
+    result <- timeout (40 * 60 * 1000000) $ withCreateProcess spec $ \_ out _ process -> do
+      seen <- stream (fromMaybe (error "no stdout") out) transcript (says "PLAYING") Nothing
+      void (waitForProcess process)
+      pure seen
+    maybe (Nothing <$ putStrLn ("agent turn timed out: " <> name)) pure result
+
+-- | Copies the agent's stream to the transcript; returns when the first marked line arrived.
+stream :: Handle -> Handle -> (B.ByteString -> Bool) -> Maybe UTCTime -> IO (Maybe UTCTime)
+stream out transcript marked seen =
+  hIsEOF out >>= \case
+    True -> pure seen
+    False -> do
+      line <- B.hGetLine out
+      now <- getCurrentTime
+      B.hPutStrLn transcript line
+      stream out transcript marked (seen <|> (now <$ guard (marked line)))
+
+-- | Whether a stream-json line is an assistant message with the word alone on a line of its text.
+says :: T.Text -> B.ByteString -> Bool
+says word line = fromMaybe False $ do
+  Object message <- decodeStrict line
+  guard (KM.lookup "type" message == Just "assistant")
+  Object body <- KM.lookup "message" message
+  Array content <- KM.lookup "content" body
+  pure (any (\case Object c | Just (String t) <- KM.lookup "text" c -> word `elem` map T.strip (T.lines t); _ -> False) content)
+
+-- | npm puts only a .cmd shim on PATH; a process needs the executable behind it.
+claudeExe :: IO FilePath
+claudeExe =
+  findExecutable "claude" >>= \case
+    Just exe -> pure exe
+    Nothing -> do
+      appData <- fromMaybe "" . lookup "APPDATA" <$> getEnvironment
+      pure (appData </> "npm" </> "node_modules" </> "@anthropic-ai" </> "claude-code" </> "bin" </> "claude.exe")
+
+-- * Exploitation: solution.py plays the songs, with no LLM
+
+exploit :: [String] -> IO ()
+exploit opts = do
+  run <- newRun "exploit"
+  songs <- readSongs opts
+  copyFile (fromMaybe "solution.py" (option "solution" opts)) (folder run </> "solution.py")
+  let queue = maybe id take (maxSongs opts) (zip [1 :: Int ..] (cycle songs))
+      spec diagnostics =
+        (proc "python" ["-X", "utf8", folder run </> "solution.py", "--chrome-profile", chromeProfile run])
+          {env = Just (vars run), std_in = CreatePipe, std_out = CreatePipe, std_err = UseHandle diagnostics}
+  withFile (folder run </> "solution.out") AppendMode $ \transcript ->
+    withFile (folder run </> "solution.err") AppendMode $ \diagnostics ->
+    withCreateProcess (spec diagnostics) $ \input output _ process -> do
+      let toSolution = fromMaybe (error "no stdin") input
+          next = answer (fromMaybe (error "no stdout") output) transcript
+      mapM_ (`hSetBuffering` LineBuffering) [toSolution, transcript]
+      expect "READY" =<< next
+      forM_ queue $ \(n, query) -> do
+        assigned <- getCurrentTime
+        hPutStrLn toSolution query
+        (word, at) <- next
+        playing <- case word of
+          "PLAYING" -> Just at <$ (expect "PAUSED" =<< next)
+          _ -> Nothing <$ expect "SKIPPED" (word, at)
+        record run n query assigned playing =<< getCurrentTime
+      hClose toSolution
+      void (waitForProcess process)
+  putStrLn ("logs in " <> folder run)
+
+-- | The next word solution.py prints, with the time it arrived. Gives up after 20 minutes of silence.
+answer :: Handle -> Handle -> IO (String, UTCTime)
+answer out transcript = do
+  line <- timeout (20 * 60 * 1000000) $ hIsEOF out >>= \eof -> if eof then pure Nothing else Just <$> hGetLine out
+  now <- getCurrentTime
+  case line of
+    Just (Just word) -> do
+      hPutStrLn transcript (formatTime defaultTimeLocale "%FT%T%3QZ " now <> trim word)
+      pure (trim word, now)
+    Just Nothing -> die "solution.py exited"
+    Nothing -> die "solution.py stopped answering"
+
+expect :: String -> (String, UTCTime) -> IO ()
+expect wanted (word, _) = unless (word == wanted) (die ("solution.py said " <> show word <> ", expected " <> wanted))
+
+-- * Report: the stages side by side
+
+report :: [FilePath] -> IO ()
+report dirs = do
+  putStrLn "| run | songs | played | mean latency | median | min | max | blindly4 calls until PLAYING | per song |"
+  putStrLn "|---|---|---|---|---|---|---|---|---|"
+  forM_ dirs $ \runDir -> do
+    rows <- mapMaybe row . lines <$> readFile (runDir </> "latency.csv")
+    calls <- mapMaybe callTime . B.lines <$> B.readFile (runDir </> "blindly4.jsonl")
+    let latencies = sort [p - a | (a, Just p, _) <- rows]
+        between a b = fromIntegral (length (filter (\t -> a <= t && t < b) calls))
+        cells =
+          [takeFileName runDir, show (length rows), show (length latencies)]
+            <> stats latencies
+            <> map (printf "%.1f" . average) [[between a p | (a, Just p, _) <- rows], [between a d | (a, _, d) <- rows]]
+    putStrLn ("| " <> intercalate " | " cells <> " |")
+  where
+    row line = case splitOn ',' line of
+      _ : a : p : d : _ -> (,readMaybe p,) <$> readMaybe a <*> readMaybe d
+      _ -> Nothing :: Maybe (Double, Maybe Double, Double)
+    callTime line = realToFrac . utcTimeToPOSIXSeconds <$> (decodeStrict line >>= parseMaybe (withObject "call" (.: "ts"))) :: Maybe Double
+    average xs = if null xs then 0 else sum xs / fromIntegral (length xs) :: Double
+
+-- | Mean, median, min and max of sorted numbers, in seconds.
+stats :: [Double] -> [String]
+stats [] = replicate 4 "–"
+stats xs = map (printf "%.1f s") [sum xs / n, (xs !! (len `div` 2) + xs !! ((len - 1) `div` 2)) / 2, minimum xs, maximum xs]
+  where
+    len = length xs
+    n = fromIntegral len
+
+splitOn :: Char -> String -> [String]
+splitOn c s = case break (== c) s of
+  (field, _ : rest) -> field : splitOn c rest
+  (field, []) -> [field]

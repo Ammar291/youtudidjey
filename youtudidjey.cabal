@@ -1,0 +1,22 @@
+cabal-version:      3.0
+name:               youtudidjey
+version:            0.2.0.0
+synopsis:           A YouTube DJ: an LLM agent explores through blindly4 and writes solution.py, which then plays with no LLM
+license:            NONE
+build-type:         Simple
+
+executable youtudidjey
+    main-is:            Main.hs
+    hs-source-dirs:     app
+    default-language:   GHC2021
+    default-extensions: LambdaCase OverloadedStrings
+    ghc-options:        -Wall -threaded
+    build-depends:
+        base >=4.18 && <5,
+        aeson,
+        bytestring,
+        directory,
+        filepath,
+        process,
+        text,
+        time
