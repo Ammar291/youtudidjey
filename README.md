@@ -12,7 +12,10 @@ only through [blindly4](https://github.com/aleski-green/blindly4) (accessibility
 | `youtudidjey exploit` | `solution.py`, with no LLM | the songs play, forever |
 
 The playback logic exists once: in the agent's head during exploration, and in the generated
-`solution.py` afterwards. Haskell never reads the page or presses anything.
+`solution.py` afterwards. Haskell never reads the page or presses anything. `youtudidjey`'s own use
+of blindly4 is indirect by design: it puts the patched blindly4 on its children's `PATH` and sets
+`BLINDLY4_LOG`, so every browser action in either stage, by the agent or by `solution.py`, is a
+blindly4 call and is logged. Neither stage has any other route to the browser.
 
 ## The exploration harness
 
@@ -48,7 +51,9 @@ Everything the LLM gets is in this repository:
 Both actors answer with words on a line of their own: `READY` after opening Chrome, `PLAYING` once the
 assigned song itself (not an ad) is playing, `PAUSED` after pausing it 3 s before its end, or `SKIPPED`
 if `solution.py` could not play it. The agent writes these words in its replies; `solution.py` prints
-them on stdout (and reads songs from stdin, one per line).
+them on stdout (and reads songs from stdin, one per line). An agent turn is limited to 40 minutes and
+`solution.py` to 20 minutes of silence; at the limit `youtudidjey` terminates the child, because a
+plain Haskell `timeout` cannot interrupt a pipe read on Windows.
 
 youtudidjey records, per song, the time it assigned the song (sent the message, or wrote the line) and
 the time `PLAYING` arrived. That difference is the **latency** in `latency.csv`. Browser start-up is
