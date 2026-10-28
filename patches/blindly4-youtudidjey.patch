@@ -1,7 +1,7 @@
 From 88237c720845c4253571435607411d3dc524a9bd Mon Sep 17 00:00:00 2001
 From: muham <mhammar029@gmail.com>
 Date: Sun, 18 Oct 2026 15:27:16 +0400
-Subject: [PATCH 1/2] windows: lazy find, --identifier, --under, hover,
+Subject: [PATCH 1/3] windows: lazy find, --identifier, --under, hover,
  ReadyToRun
 
 ---
@@ -1356,7 +1356,7 @@ index 2a85e17..8db02b0 100644
 From fb2f4fa3b4bb2e93347e6a0d79575ff7700cd39b Mon Sep 17 00:00:00 2001
 From: muham <mhammar029@gmail.com>
 Date: Sun, 18 Oct 2026 15:32:48 +0400
-Subject: [PATCH 2/2] windows: isolated Chrome open (--chrome-profile),
+Subject: [PATCH 2/3] windows: isolated Chrome open (--chrome-profile),
  --format xml for tree/find, --expect-description on set-value/focus
 
 ---
@@ -1632,6 +1632,293 @@ index 0000000..b66ce8d
 +            else Console.WriteLine(indent + Element(row));
 +        }
 +    }
++}
+-- 
+2.50.1.windows.1
+
+
+From cb88ef9afb52e41adaab96cef3727a1bdd32e35c Mon Sep 17 00:00:00 2001
+From: muham <mhammar029@gmail.com>
+Date: Wed, 28 Oct 2026 21:17:42 +0530
+Subject: [PATCH 3/3] windows: call log (BLINDLY4_LOG), --at UNIX_SECONDS,
+ press --under with title/role/identifier
+
+- BLINDLY4_LOG=FILE makes every invocation append one JSON line (start time, duration,
+  BLINDLY4_LOG_TAG, arguments, exit code, stdout); concurrent writers serialize on the file.
+- --at UNIX_SECONDS (any command) waits until that moment, then runs it; the accessibility
+  deadline starts after the wait. Lets a slow caller time an action to about 0.1 s.
+- press --under PATH [--title] [--role] [--identifier] [--depth] presses the first match below
+  PATH as the tree is when the press runs, so a press scheduled with --at survives a page
+  renumbering its children (YouTube's control bar does).
+
+Self-test: 78 checks.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ windows/Accessibility/Desktop.cs |  22 +++++--
+ windows/CLI/CallLog.cs           |  65 ++++++++++++++++++
+ windows/CLI/Registry.cs          |   4 +-
+ windows/CLI/SelfTest.cs          |   1 +
+ windows/Program.cs               | 109 +++++++++++++++++++------------
+ 5 files changed, 152 insertions(+), 49 deletions(-)
+ create mode 100644 windows/CLI/CallLog.cs
+
+diff --git a/windows/Accessibility/Desktop.cs b/windows/Accessibility/Desktop.cs
+index 77d2cb4..68e01b3 100644
+--- a/windows/Accessibility/Desktop.cs
++++ b/windows/Accessibility/Desktop.cs
+@@ -109,18 +109,30 @@ internal sealed class Desktop
+         mutate(target);
+         Program.Json(new { path, action, ok = true });
+     }
+-    static void Expect(Invocation i, Node target)
++    static void Expect(Invocation i, Node target, string? path = null)
+     {
+         if (i.Has("expect-description") && !(target.Detail()["description"]?.ToString() ?? "").Contains(i.Value("expect-description"), StringComparison.OrdinalIgnoreCase))
+-            throw new CliError($"{i.Value("path")} does not match --expect-description");
++            throw new CliError($"{path ?? i.Value("path")} does not match --expect-description");
++    }
++    // Instead of --path, --under PATH with --title/--role/--identifier presses the first match below PATH
++    // as it is when the press runs, so a press scheduled with --at survives the page renumbering children.
++    static (Node Node, string Path) Target(Invocation i, Desktop desktop)
++    {
++        if (i.Has("path")) return (desktop.Resolve(i.Value("path")), i.Value("path"));
++        var active = Filters.Where(f => i.Has(f.Key)).ToArray();
++        if (!i.Has("under") || active.Length == 0) throw new CliError("press needs --path, or --under with --title, --role or --identifier");
++        var under = i.Value("under");
++        Guards.Path(under);
++        foreach (var (node, path) in desktop.Walk(i.Integer("depth", 8, 0, 64), under))
++            if (active.All(f => Matches(f.Key, f.Read(node), i.Value(f.Key)))) return (node, path);
++        throw CliError.Access($"No element below {under} matches");
+     }
+     internal static void Press(Invocation i)
+     {
+         i.Pair("require-value-path", "require-value");
+         var desktop = new Desktop(i.Pid);
+-        var path = i.Value("path");
+-        var target = desktop.Resolve(path);
+-        Expect(i, target);
++        var (target, path) = Target(i, desktop);
++        Expect(i, target, path);
+         if (i.Has("require-value-path") && !desktop.Resolve(i.Value("require-value-path")).ExactDraft(i.Value("require-value")))
+             throw CliError.Access("Press blocked: the draft does not exactly match --require-value");
+         target.Press();
+diff --git a/windows/CLI/CallLog.cs b/windows/CLI/CallLog.cs
+new file mode 100644
+index 0000000..7368db4
+--- /dev/null
++++ b/windows/CLI/CallLog.cs
+@@ -0,0 +1,65 @@
++using System.Diagnostics;
++using System.IO;
++using System.Text;
++using System.Text.Encodings.Web;
++using System.Text.Json;
++
++namespace Blindly;
++
++// Opt-in call log: when BLINDLY4_LOG names a file, every invocation appends one JSON line with its
++// start time, duration, BLINDLY4_LOG_TAG, arguments, exit code and stdout. Writers serialize on the file.
++internal static class CallLog
++{
++    static readonly JsonSerializerOptions Options = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
++
++    internal static void Start(string[] args)
++    {
++        var path = Environment.GetEnvironmentVariable("BLINDLY4_LOG");
++        if (string.IsNullOrEmpty(path)) return;
++        var started = DateTimeOffset.Now;
++        var clock = Stopwatch.StartNew();
++        var output = new StringWriter();
++        Console.SetOut(new Tee(Console.Out, output));
++        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
++        {
++            try
++            {
++                Console.Out.Flush();
++                Append(path, JsonSerializer.Serialize(new
++                {
++                    ts = started.ToString("o"),
++                    ms = clock.ElapsedMilliseconds,
++                    tag = Environment.GetEnvironmentVariable("BLINDLY4_LOG_TAG"),
++                    args,
++                    exit = Environment.ExitCode,
++                    output = output.ToString(),
++                }, Options) + "\n");
++            }
++            catch (Exception e) { Console.Error.WriteLine($"blindly4: call log not written: {e.Message}"); }
++        };
++    }
++
++    static void Append(string path, string line)
++    {
++        var bytes = new UTF8Encoding(false).GetBytes(line);
++        for (var attempt = 0; ; attempt++)
++        {
++            try
++            {
++                using var file = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
++                file.Write(bytes);
++                return;
++            }
++            catch (IOException) when (attempt < 500) { Thread.Sleep(10); }
++        }
++    }
++
++    sealed class Tee(TextWriter console, TextWriter copy) : TextWriter
++    {
++        public override Encoding Encoding => console.Encoding;
++        public override void Write(char value) { console.Write(value); copy.Write(value); }
++        public override void Write(char[] buffer, int index, int count) { console.Write(buffer, index, count); copy.Write(buffer, index, count); }
++        public override void Write(string? value) { console.Write(value); copy.Write(value); }
++        public override void Flush() => console.Flush();
++    }
++}
+diff --git a/windows/CLI/Registry.cs b/windows/CLI/Registry.cs
+index 688a247..c5c5ffd 100644
+--- a/windows/CLI/Registry.cs
++++ b/windows/CLI/Registry.cs
+@@ -33,7 +33,7 @@ internal static class Registry
+         Mutate("focus", PathArgs + " [--expect-description TEXT]", "Focus an element.", i => Desktop.Mutate(i, "AXFocused", n => n.Focus())),
+         Mutate("show-menu", PathArgs, "Expand an accessible menu control when supported.", i => Desktop.Mutate(i, "AXShowMenu", n => n.Expand())),
+         Mutate("scroll-to", PathArgs, "Scroll an accessible item into view.", i => Desktop.Mutate(i, "AXScrollToVisible", n => n.ScrollTo())),
+-        Mutate("press", PathArgs + " [--expect-description TEXT] [--require-selected] [--require-value-path PATH --require-value TEXT]", "Invoke or select a control; may submit external data.", Desktop.Press, "external-commit"),
++        Mutate("press", "(--path INDEX[.INDEX...] | --under PATH [--title TEXT] [--role ROLE] [--identifier ID] [--depth N]) [--pid PID] [--expect-description TEXT] [--require-selected] [--require-value-path PATH --require-value TEXT]", "Invoke or select a control (by path, or the first match below --under when the press runs); may submit external data.", Desktop.Press, "external-commit"),
+         Mutate("set-value", PathArgs + " --value TEXT [--expect-description TEXT]", "Set a writable ValuePattern.", i => Desktop.Mutate(i, "AXValue", n => n.SetValue(i.Value("value")))),
+         Mutate("set-selected-text", PathArgs + " --value TEXT", "Replace selected text in a focused writable control.", Input.SelectedText),
+         Mutate("click", "--x X --y Y [--pid PID]", "Click a screen coordinate in the verified target application.", Input.Click),
+@@ -44,5 +44,5 @@ internal static class Registry
+         Mutate("key", "--key KEY [--pid PID] [--target-path PATH --require-value TEXT]", "Inject a key; a guarded key requires exact focused draft and PID.", Input.Key, "external-commit")
+     ];
+     internal static Command Get(string name) => All.FirstOrDefault(c => c.Name == name) ?? throw new CliError($"Unknown command: {name}");
+-    internal static string Help() => "Blindly4 for Windows — native UI Automation, stateless CLI\n" + string.Join("\n", All.Select(c => $"  {c.Name} {c.Arguments}\n    {c.Summary} [{c.Risk}]")) + "\nGlobal: --profile, --self-test. Paths are live: rediscover before input. Serialize desktop workflows.";
++    internal static string Help() => "Blindly4 for Windows — native UI Automation, stateless CLI\n" + string.Join("\n", All.Select(c => $"  {c.Name} {c.Arguments}\n    {c.Summary} [{c.Risk}]")) + "\nGlobal: --profile, --self-test, --at UNIX_SECONDS (wait until then, then run). Paths are live: rediscover before input. Serialize desktop workflows.";
+ }
+diff --git a/windows/CLI/SelfTest.cs b/windows/CLI/SelfTest.cs
+index ec550ef..fee455b 100644
+--- a/windows/CLI/SelfTest.cs
++++ b/windows/CLI/SelfTest.cs
+@@ -46,6 +46,7 @@ internal static class SelfTest
+         Check(Registry.Get("open").Options.Contains("chrome-profile"));
+         Check(Registry.Get("tree").Options.Contains("format") && Registry.Get("find").Options.Contains("format"));
+         Check(Registry.Get("set-value").Options.Contains("expect-description") && Registry.Get("focus").Options.Contains("expect-description"));
++        Check(new[] { "path", "under", "title", "role", "identifier", "depth" }.All(Registry.Get("press").Options.Contains));
+         Check(Xml.Element(new Dictionary<string, object?> { ["role"] = "AXButton", ["path"] = "0.1", ["title"] = "Pause (k)", ["description"] = "Pause (k)", ["actions"] = new[] { "AXPress" } })
+             == "<AXButton path=\"0.1\" title=\"Pause (k)\" actions=\"AXPress\" />");
+         Check(Xml.Element(new Dictionary<string, object?> { ["role"] = "AXStaticText", ["title"] = "a<b & \"c\"" }) == "<AXStaticText title=\"a&lt;b &amp; &quot;c&quot;\" />");
+diff --git a/windows/Program.cs b/windows/Program.cs
+index a801b35..fba8e54 100644
+--- a/windows/Program.cs
++++ b/windows/Program.cs
+@@ -1,42 +1,67 @@
+-using System.Diagnostics;
+-using System.Text;
+-using System.Text.Json;
+-using System.Windows.Automation;
+-
+-namespace Blindly;
+-
+-internal static class Program
+-{
+-    [STAThread]
+-    static int Main(string[] args)
+-    {
+-        Console.OutputEncoding = new UTF8Encoding(false);
+-        if (args.SequenceEqual(new[] { "--test-app" })) { SelfTest.TestApp(); return 0; }
+-        var clock = Stopwatch.StartNew();
+-        bool profile = args.Contains("--profile");
+-        using var deadline = new System.Threading.Timer(_ => {
+-            Json(new { error = "Accessibility command timed out; inspect the target before retrying input.", code = "accessibility_error" });
+-            Environment.Exit(77);
+-        }, null, 25000, Timeout.Infinite);
+-        try
+-        {
+-            args = args.Where(a => a != "--profile").ToArray();
+-            if (args.SequenceEqual(new[] { "--self-test" })) return SelfTest.Run();
+-            if (args.SequenceEqual(new[] { "--integration-test" })) { deadline.Change(Timeout.Infinite, Timeout.Infinite); return SelfTest.Integration(); }
+-            if (args.Length == 0 || args.SequenceEqual(new[] { "--help" }) || args.SequenceEqual(new[] { "help" }))
+-            { Console.WriteLine(Registry.Help()); return 0; }
+-            var command = Registry.Get(args[0]);
+-            if (args.Skip(1).SequenceEqual(new[] { "--help" }))
+-            { Json(command.Metadata); return 0; }
+-            var invocation = new Invocation(command, args.Skip(1).ToArray());
+-            command.Execute(invocation);
+-            return 0;
+-        }
+-        catch (CliError e) { Json(new { error = e.Message, code = e.Code }); return e.ExitCode; }
+-        catch (Exception e) when (e is ElementNotAvailableException or ElementNotEnabledException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or InvalidOperationException)
+-        { Json(new { error = e.Message, code = "accessibility_error" }); return 77; }
+-        catch (Exception e) { Json(new { error = e.Message, code = "unexpected_error" }); return 1; }
+-        finally { if (profile) Console.Error.WriteLine(JsonSerializer.Serialize(new { elapsedMs = clock.ElapsedMilliseconds, platform = "windows" })); }
+-    }
+-    internal static void Json(object value) => Console.WriteLine(JsonSerializer.Serialize(value));
+-}
++using System.Diagnostics;
++using System.Globalization;
++using System.Text;
++using System.Text.Json;
++using System.Windows.Automation;
++
++namespace Blindly;
++
++internal static class Program
++{
++    [STAThread]
++    static int Main(string[] args)
++    {
++        Console.OutputEncoding = new UTF8Encoding(false);
++        CallLog.Start(args);
++        return Environment.ExitCode = Run(args);
++    }
++
++    static int Run(string[] args)
++    {
++        if (args.SequenceEqual(new[] { "--test-app" })) { SelfTest.TestApp(); return 0; }
++        var clock = Stopwatch.StartNew();
++        bool profile = args.Contains("--profile");
++        using var deadline = new System.Threading.Timer(_ => {
++            Json(new { error = "Accessibility command timed out; inspect the target before retrying input.", code = "accessibility_error" });
++            Environment.Exit(77);
++        }, null, 25000, Timeout.Infinite);
++        try
++        {
++            args = Defer(args.Where(a => a != "--profile").ToArray(), deadline);
++            if (args.SequenceEqual(new[] { "--self-test" })) return SelfTest.Run();
++            if (args.SequenceEqual(new[] { "--integration-test" })) { deadline.Change(Timeout.Infinite, Timeout.Infinite); return SelfTest.Integration(); }
++            if (args.Length == 0 || args.SequenceEqual(new[] { "--help" }) || args.SequenceEqual(new[] { "help" }))
++            { Console.WriteLine(Registry.Help()); return 0; }
++            var command = Registry.Get(args[0]);
++            if (args.Skip(1).SequenceEqual(new[] { "--help" }))
++            { Json(command.Metadata); return 0; }
++            var invocation = new Invocation(command, args.Skip(1).ToArray());
++            command.Execute(invocation);
++            return 0;
++        }
++        catch (CliError e) { Json(new { error = e.Message, code = e.Code }); return e.ExitCode; }
++        catch (Exception e) when (e is ElementNotAvailableException or ElementNotEnabledException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or InvalidOperationException)
++        { Json(new { error = e.Message, code = "accessibility_error" }); return 77; }
++        catch (Exception e) { Json(new { error = e.Message, code = "unexpected_error" }); return 1; }
++        finally { if (profile) Console.Error.WriteLine(JsonSerializer.Serialize(new { elapsedMs = clock.ElapsedMilliseconds, platform = "windows" })); }
++    }
++    // --at UNIX_SECONDS waits until that moment and then runs the command, so a slow caller (an LLM) can
++    // time an action precisely. The accessibility deadline starts after the wait; at most one hour ahead.
++    static string[] Defer(string[] args, System.Threading.Timer deadline)
++    {
++        int i = Array.IndexOf(args, "--at");
++        if (i < 0) return args;
++        if (i + 1 >= args.Length || !double.TryParse(args[i + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out var at))
++            throw new CliError("--at needs a Unix time in seconds");
++        var wait = DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Round(at * 1000)) - DateTimeOffset.UtcNow;
++        if (wait > TimeSpan.FromHours(1)) throw new CliError("--at is more than one hour ahead");
++        if (wait > TimeSpan.Zero)
++        {
++            deadline.Change(Timeout.Infinite, Timeout.Infinite);
++            Thread.Sleep(wait);
++            deadline.Change(25000, Timeout.Infinite);
++        }
++        return args.Where((_, j) => j != i && j != i + 1).ToArray();
++    }
++    internal static void Json(object value) => Console.WriteLine(JsonSerializer.Serialize(value));
 +}
 -- 
 2.50.1.windows.1
