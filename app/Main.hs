@@ -154,11 +154,14 @@ agentTurn run model name continue codegen prompt = do
           <> ["--tools", tools, "--allowedTools"] <> allowed <> ["--permission-mode", "dontAsk"]
           <> ["--safe-mode", "--strict-mcp-config", "--output-format", "stream-json", "--verbose"]
           <> ["--continue" | continue]
+      environment
+        | codegen = ("BLINDLY4_LOG_TAG", "codegen") : filter ((/= "BLINDLY4_LOG_TAG") . fst) (vars run)
+        | otherwise = vars run
   putStrLn ("agent: " <> name)
   withFile (folder run </> "agent.jsonl") AppendMode $ \transcript -> do
     hSetBuffering transcript LineBuffering
     BL.hPutStrLn transcript (encode (object ["youtudidjey" .= object ["turn" .= name, "argv" .= (claude : args)]]))
-    let spec = (proc claude args) {cwd = Just (folder run), env = Just (vars run), std_in = NoStream, std_out = CreatePipe}
+    let spec = (proc claude args) {cwd = Just (folder run), env = Just environment, std_in = NoStream, std_out = CreatePipe}
     (playing, timedOut) <- withCreateProcess spec $ \_ out _ process ->
       withDeadline turnDeadline process $ do
         seen <- stream (fromMaybe (error "no stdout") out) transcript (says "PLAYING") Nothing

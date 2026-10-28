@@ -61,7 +61,7 @@ Each run gets a directory `runs/<stage>-<time>/`:
 
 | File | What |
 |---|---|
-| `blindly4.jsonl` | **every blindly4 call**, written by blindly4 itself: start time, duration, arguments, exit code, output. Covers the agent's calls and `solution.py`'s alike. |
+| `blindly4.jsonl` | **every blindly4 call**, written by blindly4 itself: start time, duration, arguments, exit code, output. Covers the agent's calls and `solution.py`'s alike. Each line's `tag` is `explore` for the agent's setup and song turns, `codegen` for the code-generation turn (including its test of `solution.py`), and `exploit` for exploitation. |
 | `latency.csv` | per song: assigned, playing, done (Unix seconds), latency, song |
 | `agent.jsonl`, `system-prompt.md` | exploration: the full agent transcript and the system prompt it got |
 | `solution.py`, `solution.out`, `solution.err` | exploitation: the program that ran, its words with times, its diagnostics |
