@@ -38,14 +38,17 @@ Diagnostics go to stderr.
 - Time the pause from a fresh slider reading, and read it again about 20 s before the end, in case an
   ad or buffering moved the end. A reading is fresh only right after the pointer **moved** over the
   player: alternate the hover between two points, never the same point twice in a row. If readings
-  still don't advance, fall back to the time elapsed since the song started playing. Press Pause by query, not by path:
+  still don't advance, fall back to the time elapsed since the song started playing. Bound the re-read
+  too: if no fresh reading with the song's length arrives before the pause time computed from the
+  previous reading (an ad may be playing), press Pause at that time anyway, falling back to the
+  elapsed-time estimate; never wait past it for an ad to end. Press Pause by query, not by path:
   `press --under PLAYER --role button --title Pause --expect-description Pause`, optionally with
   `--at T`.
 - **Functional style**: a pure core (parsing outputs, choosing a result, computing deadlines) separate
   from the few functions that call blindly4. Use immutable data (`NamedTuple`, tuples, frozen
   dataclasses), no mutable globals, and `map`/`filter`/comprehensions/`functools`/`itertools` where
   they read naturally.
-- Keep it short and readable: about 150–250 lines.
+- Keep it short and readable: about 200–300 lines.
 
 ## Shape
 
