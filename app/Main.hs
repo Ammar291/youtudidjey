@@ -10,6 +10,8 @@
 module Main (main) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, threadDelay, tryReadMVar)
+import Control.Exception (bracket)
 import Control.Monad (forM_, guard, unless, void)
 import Data.Aeson (Value (..), decodeStrict, encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as KM
@@ -18,7 +20,7 @@ import Data.ByteString.Char8 qualified as B
 import Data.ByteString.Lazy.Char8 qualified as BL
 import Data.Char (toUpper)
 import Data.List (intercalate, partition, sort)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Text qualified as T
 import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime, getZonedTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
@@ -29,7 +31,6 @@ import System.Exit (die)
 import System.FilePath (searchPathSeparator, takeFileName, (</>))
 import System.IO
 import System.Process
-import System.Timeout (timeout)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 
@@ -94,6 +95,24 @@ record run n song assigned playing done = do
 since :: UTCTime -> UTCTime -> Double
 since t0 t1 = realToFrac (diffUTCTime t1 t0)
 
+-- | Seconds an agent turn may take before youtudidjey terminates claude.
+turnDeadline :: Int
+turnDeadline = 40 * 60
+
+-- | Seconds solution.py may take to print its next word before youtudidjey terminates it.
+silenceDeadline :: Int
+silenceDeadline = 20 * 60
+
+-- | Runs an action that reads a child's output, terminating the child if the action takes more than
+-- @secs@ seconds; says whether it did. A 'System.Timeout.timeout' cannot interrupt a pipe read on
+-- Windows, but the read returns at end of file once the child is gone.
+withDeadline :: Int -> ProcessHandle -> IO a -> IO (a, Bool)
+withDeadline secs process action = do
+  fired <- newEmptyMVar
+  let watchdog = threadDelay (secs * 1000000) >> putMVar fired () >> terminateProcess process
+  result <- bracket (forkIO watchdog) killThread (const action)
+  (result,) . isJust <$> tryReadMVar fired
+
 -- * Exploration: the agent plays the songs, then writes solution.py
 
 explore :: [String] -> IO ()
@@ -140,11 +159,12 @@ agentTurn run model name continue codegen prompt = do
     hSetBuffering transcript LineBuffering
     BL.hPutStrLn transcript (encode (object ["youtudidjey" .= object ["turn" .= name, "argv" .= (claude : args)]]))
     let spec = (proc claude args) {cwd = Just (folder run), env = Just (vars run), std_in = NoStream, std_out = CreatePipe}
-    result <- timeout (40 * 60 * 1000000) $ withCreateProcess spec $ \_ out _ process -> do
-      seen <- stream (fromMaybe (error "no stdout") out) transcript (says "PLAYING") Nothing
-      void (waitForProcess process)
-      pure seen
-    maybe (Nothing <$ putStrLn ("agent turn timed out: " <> name)) pure result
+    (playing, timedOut) <- withCreateProcess spec $ \_ out _ process ->
+      withDeadline turnDeadline process $ do
+        seen <- stream (fromMaybe (error "no stdout") out) transcript (says "PLAYING") Nothing
+        void (waitForProcess process)
+        pure seen
+    if timedOut then Nothing <$ putStrLn ("agent turn timed out: " <> name) else pure playing
 
 -- | Copies the agent's stream to the transcript; returns when the first marked line arrived.
 stream :: Handle -> Handle -> (B.ByteString -> Bool) -> Maybe UTCTime -> IO (Maybe UTCTime)
@@ -190,7 +210,7 @@ exploit opts = do
     withFile (folder run </> "solution.err") AppendMode $ \diagnostics ->
     withCreateProcess (spec diagnostics) $ \input output _ process -> do
       let toSolution = fromMaybe (error "no stdin") input
-          next = answer (fromMaybe (error "no stdout") output) transcript
+          next = answer process (fromMaybe (error "no stdout") output) transcript
       mapM_ (`hSetBuffering` LineBuffering) [toSolution, transcript]
       expect "READY" =<< next
       forM_ queue $ \(n, query) -> do
@@ -205,17 +225,17 @@ exploit opts = do
       void (waitForProcess process)
   putStrLn ("logs in " <> folder run)
 
--- | The next word solution.py prints, with the time it arrived. Gives up after 20 minutes of silence.
-answer :: Handle -> Handle -> IO (String, UTCTime)
-answer out transcript = do
-  line <- timeout (20 * 60 * 1000000) $ hIsEOF out >>= \eof -> if eof then pure Nothing else Just <$> hGetLine out
+-- | The next word solution.py prints, with the time it arrived. After 'silenceDeadline' seconds of
+-- silence it terminates solution.py and gives up.
+answer :: ProcessHandle -> Handle -> Handle -> IO (String, UTCTime)
+answer process out transcript = do
+  (line, silent) <- withDeadline silenceDeadline process $ hIsEOF out >>= \eof -> if eof then pure Nothing else Just <$> hGetLine out
   now <- getCurrentTime
   case line of
-    Just (Just word) -> do
+    Just word | not silent -> do
       hPutStrLn transcript (formatTime defaultTimeLocale "%FT%T%3QZ " now <> trim word)
       pure (trim word, now)
-    Just Nothing -> die "solution.py exited"
-    Nothing -> die "solution.py stopped answering"
+    _ -> die (if silent then "solution.py stopped answering" else "solution.py exited")
 
 expect :: String -> (String, UTCTime) -> IO ()
 expect wanted (word, _) = unless (word == wanted) (die ("solution.py said " <> show word <> ", expected " <> wanted))
