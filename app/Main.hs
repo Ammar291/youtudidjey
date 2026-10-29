@@ -46,8 +46,8 @@ main = do
 
 usage :: String
 usage =
-  "usage: youtudidjey explore [--songs FILE] [--max-songs N] [--model MODEL]\n\
-  \       youtudidjey exploit [--songs FILE] [--max-songs N] [--solution FILE]\n\
+  "usage: youtudidjey explore [--songs FILE] [--max-songs N] [--model MODEL] [--sandbox]\n\
+  \       youtudidjey exploit [--songs FILE] [--max-songs N] [--solution FILE] [--sandbox]\n\
   \       youtudidjey report RUN_DIR..."
 
 -- | The value after @--name@, if given.
@@ -55,6 +55,10 @@ option :: String -> [String] -> Maybe String
 option name = \case
   k : v : rest -> if k == "--" <> name then Just v else option name (v : rest)
   _ -> Nothing
+
+-- | Whether the bare @--name@ is given.
+flag :: String -> [String] -> Bool
+flag name = elem ("--" <> name)
 
 readSongs :: [String] -> IO [String]
 readSongs opts = filter (not . null) . map trim . lines <$> readFile (fromMaybe "songs.txt" (option "songs" opts))
@@ -67,11 +71,12 @@ trim = T.unpack . T.strip . T.filter (/= '\xFEFF') . T.pack
 
 -- * Runs
 
--- | A run's directory, and the environment every actor gets: blindly4 on PATH, logging into the run.
+-- | A run's directory, and the environment every actor gets: blindly4 on PATH, logging into the run, and
+-- with @--sandbox@ blindly4's sandbox mode (Chrome off screen and muted, no real pointer or keyboard).
 data Run = Run {folder :: FilePath, vars :: [(String, String)], chromeProfile :: FilePath}
 
-newRun :: String -> IO Run
-newRun stage = do
+newRun :: String -> [String] -> IO Run
+newRun stage opts = do
   root <- getCurrentDirectory
   stamp <- formatTime defaultTimeLocale "%Y%m%d-%H%M%S" <$> getZonedTime
   let runDir = root </> "runs" </> (stage <> "-" <> stamp)
@@ -79,7 +84,7 @@ newRun stage = do
   writeFile (runDir </> "latency.csv") "n,assigned,playing,done,latency_s,song\n"
   (paths, rest) <- partition ((== "PATH") . map toUpper . fst) <$> getEnvironment
   let path = intercalate [searchPathSeparator] ((root </> "blindly4" </> ".build" </> "windows") : map snd paths)
-      logging = [("BLINDLY4_LOG", runDir </> "blindly4.jsonl"), ("BLINDLY4_LOG_TAG", stage)]
+      logging = [("BLINDLY4_LOG", runDir </> "blindly4.jsonl"), ("BLINDLY4_LOG_TAG", stage)] <> [("BLINDLY4_SANDBOX", "1") | flag "sandbox" opts]
   putStrLn ("run: " <> runDir)
   -- Forward slashes: the agent's shell (Git Bash) would eat backslashes.
   pure (Run runDir (("PATH", path) : logging <> rest) (map (\c -> if c == '\\' then '/' else c) (root </> ".chrome-profile")))
@@ -117,7 +122,7 @@ withDeadline secs process action = do
 
 explore :: [String] -> IO ()
 explore opts = do
-  run <- newRun "explore"
+  run <- newRun "explore" opts
   songs <- take (fromMaybe 10 (maxSongs opts)) <$> readSongs opts
   copyFile ("prompts" </> "explore.md") (folder run </> "system-prompt.md")
   [setup, song, codegen] <- mapM (readFile . ("prompts" </>)) ["setup.md", "song.md", "codegen.md"]
@@ -202,7 +207,7 @@ claudeExe =
 
 exploit :: [String] -> IO ()
 exploit opts = do
-  run <- newRun "exploit"
+  run <- newRun "exploit" opts
   songs <- readSongs opts
   copyFile (fromMaybe "solution.py" (option "solution" opts)) (folder run </> "solution.py")
   let queue = maybe id take (maxSongs opts) (zip [1 :: Int ..] (cycle songs))

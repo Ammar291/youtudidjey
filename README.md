@@ -87,6 +87,10 @@ a fork of `aleski-green/blindly4` (Windows backend only; the same changes are in
   slowly to pause on time itself, so it schedules the press: `press … --at T` runs within ~0.1 s of T.
 - `press --under PATH --title/--role/--identifier`: press the first match below PATH, looked up when the
   press runs. YouTube renumbers its control bar, so a path found seconds earlier can point elsewhere.
+- `BLINDLY4_SANDBOX=1`: sandbox mode. `open` launches Chrome muted, with its backgrounding of unseen
+  windows disabled, and moves the window beyond the edge of the screen; `hover` and `key` post window
+  messages to it instead of moving the pointer or using the keyboard; `activate` never takes the
+  foreground; `click`, `type`, `paste` and `scroll` are refused. The desktop stays the user's.
 - Earlier: lazy `find` (4–5× faster), `find --identifier/--under`, `hover`, `open --chrome-profile`
   (an isolated Chrome with accessibility on), `--format xml`, `--expect-description` on
   `set-value`/`focus`.
@@ -106,12 +110,16 @@ bin\youtudidjey.exe report runs\explore-… runs\exploit-…
 ```
 
 Options: `--songs FILE` (default `songs.txt`), `--max-songs N`, `--model MODEL` (explore; default
-`sonnet`), `--solution FILE` (exploit; default `solution.py`). Chrome runs on a persistent, signed-out
-profile in `.chrome-profile/` (fresh profiles every run made YouTube suspect a bot).
+`sonnet`), `--solution FILE` (exploit; default `solution.py`), `--sandbox` (both stages; below). Chrome
+runs on a persistent, signed-out profile in `.chrome-profile/` (fresh profiles every run made YouTube
+suspect a bot).
 
-Both stages take over the desktop: Chrome comes to the front and the pointer moves over the player.
-Leave the computer alone while they run (Windows refuses to bring Chrome to the front while someone is
-typing).
+Without `--sandbox`, both stages take over the desktop: Chrome comes to the front and the pointer moves
+over the player, so leave the computer alone while they run (Windows refuses to bring Chrome to the
+front while someone is typing). With `--sandbox`, blindly4 runs in its sandbox mode
+(`BLINDLY4_SANDBOX=1`): Chrome opens muted and beyond the edge of the screen, hover and keys reach it as
+window messages instead of real input, nothing is brought to the front, and the real pointer and
+keyboard are never touched, so the computer stays usable while the DJ plays.
 
 ## Results
 
